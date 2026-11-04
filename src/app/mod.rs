@@ -15,6 +15,7 @@
 //! 저장소에 두 작업이 겹치지 않는다 (PLAN 19장).
 
 pub mod commands;
+pub mod registration;
 pub mod state;
 pub mod tasks;
 pub mod text;
@@ -22,6 +23,7 @@ mod windows;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -38,6 +40,7 @@ use crate::ui::{
     RepositoryRowData, SettingsWindow,
 };
 use commands::AppCommand;
+use registration::{RegistrationQueue, RegistrationReport};
 use state::{RepositoryEntry, RepositorySummary, TrayStatus};
 use tasks::{
     ChangeError, CleanReport, LoadedState, PendingCleanup, RepositoryChange, ScanReport, ScanScope,
@@ -73,6 +76,12 @@ struct App {
     progress: RefCell<String>,
     /// 메인 창 하단 안내 문구.
     notice: RefCell<String>,
+    /// 작업 중 들어온 폴더 경로를 보관한다.
+    registration_queue: RefCell<RegistrationQueue>,
+    /// 드롭 이벤트를 한 묶음으로 모으는 일회성 timer.
+    registration_timer: slint::Timer,
+    /// native 폴더 선택 창의 중복 열기를 막는다.
+    folder_picker_open: Cell<bool>,
 }
 
 /// 메인 창과 목록 model. 창을 닫으면 함께 drop한다.
@@ -182,6 +191,9 @@ pub fn run() -> Result<(), PlatformError> {
         settings: RefCell::new(AppSettings::default()),
         progress: RefCell::new(String::new()),
         notice: RefCell::new(String::new()),
+        registration_queue: RefCell::new(RegistrationQueue::default()),
+        registration_timer: slint::Timer::default(),
+        folder_picker_open: Cell::new(false),
     });
     connect_tray(&app.tray);
     APP.with(|slot| *slot.borrow_mut() = Some(Rc::clone(&app)));
@@ -282,6 +294,8 @@ impl App {
             .is_some_and(|running| running.cancellable);
         if let Some(view) = self.main_window.borrow().as_ref() {
             view.window.set_busy(busy);
+            view.window
+                .set_picking_folders(self.folder_picker_open.get());
             view.window.set_can_cancel(can_cancel);
             view.window
                 .set_progress(self.progress.borrow().as_str().into());
@@ -333,6 +347,7 @@ impl App {
             deliver_to_ui(move |app| {
                 app.finish_job();
                 finish(app, output);
+                app.schedule_registration();
             });
         });
         match spawned {
@@ -601,25 +616,133 @@ impl App {
         });
     }
 
-    /// native 폴더 선택 창을 띄우고, 고른 폴더를 저장소로 등록한다.
-    ///
-    /// 선택 창은 event loop 위에서 async로 기다려 UI를 막지 않는다.
+    /// native 다중 폴더 선택 창을 띄운다. 선택 중에는 같은 창을 다시 열지 않는다.
     fn pick_repository_folder(&self) {
-        if self.is_busy() {
+        if self.is_busy() || self.folder_picker_open.replace(true) {
             return;
         }
+        self.refresh_busy();
         let spawned = slint::spawn_local(async {
-            let folder = rfd::AsyncFileDialog::new()
-                .set_title("Add Repository")
-                .pick_folder()
+            let folders = rfd::AsyncFileDialog::new()
+                .set_title("Add Repositories")
+                .pick_folders()
                 .await;
-            if let Some(folder) = folder {
-                let path = folder.path().to_path_buf();
-                with_app(|app| app.change_repositories(RepositoryChange::Add(path), false));
-            }
+            with_app(|app| {
+                app.folder_picker_open.set(false);
+                app.refresh_busy();
+                if let Some(folders) = folders {
+                    app.enqueue_repositories(
+                        folders
+                            .into_iter()
+                            .map(|folder| folder.path().to_path_buf()),
+                    );
+                } else {
+                    app.schedule_registration();
+                }
+            });
         });
         if let Err(error) = spawned {
+            self.folder_picker_open.set(false);
+            self.refresh_busy();
             log::error!("failed to open folder picker: {error}");
+            self.set_notice(
+                "Could not open the folder picker. You can drop repository folders here.",
+            );
+            self.schedule_registration();
+        }
+    }
+
+    /// 외부 드래그가 창에 들어오거나 나갔을 때 추가 안내를 표시한다.
+    fn set_repository_drag_hover(&self, hovering: bool) {
+        if let Some(view) = self.main_window.borrow().as_ref() {
+            view.window.set_drag_hover(hovering);
+        }
+    }
+
+    /// 다중 선택과 드롭 경로를 합친다. Git과 파일 시스템 검증은 worker에서만 수행한다.
+    fn enqueue_repositories(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        self.registration_queue.borrow_mut().extend(paths);
+        if self.is_busy() && !self.registration_queue.borrow().is_empty() {
+            self.set_notice(
+                "Repository folders queued. They will be added after the current operation.",
+            );
+        }
+        self.schedule_registration();
+    }
+
+    /// 입력이 있을 때만 일회성 timer를 예약해 여러 파일 드롭 이벤트를 한 묶음으로 모은다.
+    fn schedule_registration(&self) {
+        if self.is_busy()
+            || self.folder_picker_open.get()
+            || self.registration_queue.borrow().is_empty()
+        {
+            return;
+        }
+        self.registration_timer.start(
+            slint::TimerMode::SingleShot,
+            Duration::from_millis(100),
+            || with_app(App::start_registration),
+        );
+    }
+
+    /// 다른 작업이 끝났을 때 대기 경로를 worker에 넘긴다. 먼저 시작한 작업이 있으면 보관한다.
+    fn start_registration(&self) {
+        self.registration_queue.borrow_mut().start_ready(
+            self.is_busy() || self.folder_picker_open.get(),
+            |paths| {
+                self.start_job(
+                    "register",
+                    false,
+                    move |_| {
+                        registration::add_repositories(
+                            &tasks::data_dir()?,
+                            &paths,
+                            &mut progress_to_ui,
+                        )
+                    },
+                    App::finish_registration,
+                )
+            },
+        );
+    }
+
+    /// 일괄 등록 요약을 표시하고, 실패한 폴더가 있으면 이유를 상세 창에서 보여준다.
+    fn finish_registration(&self, result: Option<CleanupResult<RegistrationReport>>) {
+        let report = match result {
+            Some(Ok(report)) => report,
+            Some(Err(error)) => {
+                self.set_notice(&format!("Could not add repositories: {error}"));
+                return;
+            }
+            None => {
+                self.set_notice("Repository registration stopped by an internal error.");
+                return;
+            }
+        };
+        self.replace_repositories(report.repositories);
+        self.refresh_rows();
+        let summary = format!(
+            "Added {} repositories · {} already registered · {} failed",
+            report.added, report.duplicates, report.failed,
+        );
+        self.set_notice(&summary);
+        if report.failed > 0 {
+            self.open_detail(&tasks::DetailReport {
+                heading: String::from("Repository registration"),
+                subheading: summary,
+                sections: vec![(
+                    "Not added (up to 50 folders)",
+                    report
+                        .problems
+                        .into_iter()
+                        .map(|problem| tasks::DetailLine {
+                            title: problem.path.display().to_string(),
+                            subtitle: problem.message,
+                            note: String::new(),
+                        })
+                        .collect(),
+                )],
+            });
         }
     }
 

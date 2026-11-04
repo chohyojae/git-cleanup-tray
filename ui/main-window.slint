@@ -3,7 +3,7 @@
 // 등록 저장소 목록을 보여주는 메인 창 (PLAN 10장).
 // 사용자가 Open을 선택했을 때만 생성하고, 닫으면 Rust 쪽에서 instance를 drop해 메모리를 돌려준다.
 
-import { Button, VerticalBox, HorizontalBox, ListView } from "std-widgets.slint";
+import { Button, VerticalBox, HorizontalBox, ListView, Palette } from "std-widgets.slint";
 import { RepositoryRowData } from "components/types.slint";
 import { RepositoryRow } from "repository-row.slint";
 
@@ -12,6 +12,10 @@ export component MainWindow inherits Window {
     in property <[RepositoryRowData]> repositories;
     // 작업 실행 중에는 버튼을 비활성화해 double-click 중복 실행을 막는다.
     in property <bool> busy: false;
+    // native 폴더 선택 창이 열려 있으면 Add 버튼의 중복 실행을 막는다.
+    in property <bool> picking-folders: false;
+    // 탐색기/Finder에서 경로를 창 위로 끌어오는 동안 추가 안내를 보여준다.
+    in property <bool> drag-hover: false;
     // 진행 상황 ("Scanning 2 of 5: Project B"). 비어 있으면 진행 표시줄을 숨긴다.
     in property <string> progress;
     // 진행 중인 작업을 취소할 수 있으면 `true` (Scan, Clean).
@@ -52,7 +56,7 @@ export component MainWindow inherits Window {
             }
             Button {
                 text: "Add…";
-                enabled: !root.busy;
+                enabled: !root.busy && !root.picking-folders;
                 clicked => { root.add-requested(); }
             }
             Button {
@@ -71,8 +75,15 @@ export component MainWindow inherits Window {
             }
         }
 
+        Text {
+            text: "Select multiple folders with Add… or drop them here.";
+            font-size: 12px;
+            opacity: 0.7;
+            wrap: word-wrap;
+        }
+
         if root.repositories.length == 0: Text {
-            text: "No repositories registered. Use Add… to register a Git repository.";
+            text: "No repositories registered. Add or drop Git repository folders to get started.";
             wrap: word-wrap;
             vertical-stretch: 1;
             horizontal-alignment: center;
@@ -113,6 +124,30 @@ export component MainWindow inherits Window {
         if root.notice != "": Text {
             text: root.notice;
             wrap: word-wrap;
+        }
+    }
+
+    // OS의 drop 이벤트는 Rust에서 받는다. 이 영역은 추가 동작을 안내하기만 한다.
+    if root.drag-hover: Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        background: Palette.background;
+        border-width: 2px;
+        border-color: Palette.border;
+        Text {
+            x: 24px;
+            y: 24px;
+            width: parent.width - 48px;
+            height: parent.height - 48px;
+            text: root.busy
+                ? "Drop repository folders here.\nThey will be added after the current operation."
+                : "Drop folders to add repositories";
+            font-size: 18px;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+            vertical-alignment: center;
         }
     }
 }

@@ -345,11 +345,12 @@ fn executor_rejects_forged_candidates() {
 fn special_character_names_are_not_interpreted() {
     let sandbox = Sandbox::new();
     let work = sandbox.clone_with_default("main", "repo");
-    // ref 이름에는 공백을 쓸 수 없어, shell이 해석하면 파일을 만드는 redirection 형태를 쓴다.
+    // ref의 공백 금지와 Windows 파일명의 `>`·`"` 금지를 모두 지킨다.
+    // shell이 문자열을 해석하면 `${IFS}`가 인자를 나눠 `touch`가 표식 파일을 만든다.
     let names = [
-        "x$(>pwned)",
-        "a;>pwned2",
-        "q'uote\"d`>pwned4`",
+        "x$(touch${IFS}pwned)",
+        "a;touch${IFS}pwned2",
+        "q'uote'`touch${IFS}pwned4`",
         "-D",
         "--force",
     ];

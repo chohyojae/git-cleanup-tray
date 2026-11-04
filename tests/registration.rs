@@ -70,3 +70,82 @@ fn rejects_plain_folder() {
         "{error:?}"
     );
 }
+
+/// 여러 입력에 중복 worktree와 잘못된 폴더가 섞여도 정상 저장소는 모두 저장한다.
+#[test]
+fn batch_registration_keeps_valid_folders_and_reports_rejections() {
+    use git_cleanup_tray::app::registration::add_repositories;
+    use git_cleanup_tray::storage::repository_store;
+
+    let sandbox = Sandbox::new();
+    let first = sandbox.clone_with_default("main", "기존 저장소");
+    let second = sandbox.clone_with_default("trunk", "새 저장소");
+    sandbox.git(&first, &["branch", "작업"]);
+    let linked = sandbox.add_worktree(&first, "중복 worktree", "작업");
+    let plain = sandbox.root.join("Git 아닌 폴더");
+    std::fs::create_dir(&plain).expect("create plain directory");
+    let missing = sandbox.root.join("없는 폴더");
+    let data = sandbox.root.join("앱 설정");
+    let mut existing = new_repository(&[], &AppSettings::default(), &first).expect("existing");
+    existing.name = String::from("사용자가 바꾼 이름");
+    existing.enabled = false;
+    repository_store::save(&data, std::slice::from_ref(&existing)).expect("save existing");
+    let mut progress = Vec::new();
+
+    let report = add_repositories(
+        &data,
+        &[linked, plain.clone(), second, first, missing.clone()],
+        &mut |message| progress.push(message),
+    )
+    .expect("register batch");
+
+    assert_eq!((report.added, report.duplicates, report.failed), (1, 2, 2));
+    assert_eq!(report.repositories.len(), 2);
+    assert_eq!(report.repositories[0], existing);
+    assert_eq!(report.repositories[1].id, RepositoryId(2));
+    assert_eq!(report.problems[0].path, plain);
+    assert_eq!(report.problems[1].path, missing);
+    assert_eq!(progress.len(), 5);
+    assert_eq!(
+        repository_store::load(&data).expect("saved list"),
+        report.repositories
+    );
+}
+
+/// 추가할 항목이 없으면 앱 설정 폴더나 빈 저장소 목록 파일을 만들지 않는다.
+#[test]
+fn empty_or_rejected_batch_does_not_create_storage() {
+    use git_cleanup_tray::app::registration::add_repositories;
+
+    let sandbox = Sandbox::new();
+    let data = sandbox.root.join("만들지 않을 설정 폴더");
+    let empty = add_repositories(&data, &[], &mut |_| {}).expect("empty batch");
+    assert_eq!((empty.added, empty.duplicates, empty.failed), (0, 0, 0));
+    assert!(!data.exists());
+
+    let report = add_repositories(&data, &[sandbox.root.join("없는 저장소")], &mut |_| {})
+        .expect("rejected batch");
+    assert_eq!((report.added, report.duplicates, report.failed), (0, 0, 1));
+    assert!(!data.exists());
+}
+
+/// 손상된 설정을 기본값으로 대신하지 않고 기존 등록 목록을 그대로 유지한다.
+#[test]
+fn batch_registration_preserves_storage_when_settings_are_invalid() {
+    use git_cleanup_tray::app::registration::add_repositories;
+    use git_cleanup_tray::storage::{repository_store, settings_store};
+
+    let sandbox = Sandbox::new();
+    let data = sandbox.root.join("손상된 앱 설정");
+    repository_store::save(&data, &[]).expect("save empty list");
+    let list = data.join(repository_store::FILE_NAME);
+    let before = std::fs::read(&list).expect("read original list");
+    std::fs::write(data.join(settings_store::FILE_NAME), "{").expect("write broken settings");
+
+    let result = add_repositories(&data, std::slice::from_ref(&sandbox.root), &mut |_| {});
+    assert!(matches!(
+        result,
+        Err(CleanupError::InvalidConfigFile { .. })
+    ));
+    assert_eq!(std::fs::read(list).expect("read retained list"), before);
+}

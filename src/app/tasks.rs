@@ -42,7 +42,7 @@ pub fn now_secs() -> u64 {
 }
 
 /// 앱 data directory. OS가 알려주지 않으면 [`CleanupError::Io`] (`NotFound`).
-fn data_dir() -> Result<PathBuf> {
+pub(super) fn data_dir() -> Result<PathBuf> {
     storage::app_data_dir().ok_or_else(|| {
         CleanupError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,

@@ -7,6 +7,7 @@
 
 use std::rc::Rc;
 
+use slint::winit_030::{EventResult, WinitWindowAccessor, winit::event::WindowEvent};
 use slint::{CloseRequestResponse, ComponentHandle, ModelRc, SharedString, VecModel};
 
 use super::commands::AppCommand;
@@ -187,6 +188,7 @@ impl App {
         if discarded.is_some() {
             log::info!("cleanup cancelled before execution");
             self.refresh_busy();
+            self.schedule_registration();
         }
         if hide {
             hide_and_release(|app| &app.cleanup_dialog);
@@ -418,6 +420,23 @@ impl App {
 
 /// 메인 창 버튼과 저장소 줄 callback을 [`AppCommand`]로 연결한다.
 fn connect_main_window(window: &MainWindow) {
+    // OS에서 받은 경로는 그대로 대기 목록에 넣고 검증은 worker에서 수행한다.
+    window.window().on_winit_window_event(|_, event| {
+        match event {
+            WindowEvent::HoveredFile(_) => {
+                with_app(|app| app.set_repository_drag_hover(true));
+            }
+            WindowEvent::HoveredFileCancelled => {
+                with_app(|app| app.set_repository_drag_hover(false));
+            }
+            WindowEvent::DroppedFile(path) => with_app(|app| {
+                app.set_repository_drag_hover(false);
+                app.enqueue_repositories([path.clone()]);
+            }),
+            _ => {}
+        }
+        EventResult::Propagate
+    });
     window.on_add_requested(|| dispatch(AppCommand::AddRepository));
     window.on_scan_all_requested(|| dispatch(AppCommand::ScanAll));
     window.on_clean_all_requested(|| dispatch(AppCommand::CleanAll));
