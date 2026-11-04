@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- SPDX-License-Identifier: GPL-3.0-only -->
+  <circle cx="9" cy="7" r="3.5" fill="none" stroke="#000" stroke-width="2.5"/>
+  <circle cx="9" cy="25" r="3.5" fill="none" stroke="#000" stroke-width="2.5"/>
+  <circle cx="23" cy="11" r="3.5" fill="none" stroke="#000" stroke-width="2.5"/>
+  <path d="M9 10.5v11M23 14.5c0 5-6 5-12.5 8" fill="none" stroke="#000" stroke-width="2.5"/>
+</svg>

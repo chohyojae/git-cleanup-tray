@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+// 등록 저장소 설정 편집 창 (PLAN 6장 Edit Repository).
+// 저장소 경로는 바꿀 수 없다. 다른 저장소를 쓰려면 새로 추가한다.
+
+import { Button, CheckBox, LineEdit, TextEdit, VerticalBox, HorizontalBox, GridBox } from "std-widgets.slint";
+
+export component RepositoryEditor inherits Window {
+    // 표시 이름.
+    in-out property <string> name;
+    // 저장소 경로 (읽기 전용).
+    in property <string> path;
+    // Scan All / Clean All 대상 여부.
+    in-out property <bool> enabled;
+    // default branch 판별에 쓸 remote 이름.
+    in-out property <string> remote;
+    // base branch 직접 지정. 비우면 자동 판별한다.
+    in-out property <string> base-override;
+    // custom ref namespace. 한 줄에 하나.
+    in-out property <string> namespaces;
+    // 입력 검증 오류. 비어 있으면 숨긴다.
+    in property <string> error;
+
+    // Save 버튼. Rust 쪽에서 검증 후 저장한다.
+    callback save();
+    // Cancel 버튼. 창 닫기와 같은 처리를 한다.
+    callback cancel();
+
+    title: "Edit Repository";
+    preferred-width: 460px;
+
+    VerticalBox {
+        GridBox {
+            padding: 0;
+            Row {
+                Text { text: "Name"; vertical-alignment: center; }
+                LineEdit { text <=> root.name; }
+            }
+            Row {
+                Text { text: "Path"; vertical-alignment: center; }
+                Text { text: root.path; wrap: word-wrap; }
+            }
+            Row {
+                Text { text: "Remote"; vertical-alignment: center; }
+                LineEdit { text <=> root.remote; placeholder-text: "origin"; }
+            }
+            Row {
+                Text { text: "Base branch"; vertical-alignment: center; }
+                LineEdit { text <=> root.base-override; placeholder-text: "Detect automatically"; }
+            }
+        }
+        CheckBox {
+            text: "Include in Scan All / Clean All";
+            checked <=> root.enabled;
+        }
+        Text { text: "Custom ref namespaces (one per line, ending with /)"; }
+        TextEdit {
+            text <=> root.namespaces;
+            min-height: 60px;
+        }
+        if root.error != "": Text {
+            text: root.error;
+            wrap: word-wrap;
+        }
+        HorizontalBox {
+            padding: 0;
+            alignment: end;
+            Button {
+                text: "Cancel";
+                clicked => { root.cancel(); }
+            }
+            Button {
+                text: "Save";
+                primary: true;
+                clicked => { root.save(); }
+            }
+        }
+    }
+}

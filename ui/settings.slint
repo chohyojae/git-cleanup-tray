@@ -1,0 +1,113 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+// 앱 설정 창 (PLAN 15장).
+// dirty worktree skip, force 삭제 금지, remote branch 삭제 금지는 설정이 아니라 불변조건이라 여기에 없다.
+
+import { Button, CheckBox, LineEdit, TextEdit, VerticalBox, HorizontalBox, GridBox, GroupBox } from "std-widgets.slint";
+
+export component SettingsWindow inherits Window {
+    // General
+    // login 시 자동 시작.
+    in-out property <bool> start-at-login;
+    // 시작 시 메인 창 없이 tray로만 시작.
+    in-out property <bool> start-minimized;
+    // tray icon 좌클릭 시 메인 창 열기 (Windows).
+    in-out property <bool> open-on-left-click;
+    // Git
+    // git 실행 파일 경로. 비우면 PATH에서 찾는다.
+    in-out property <string> git-path;
+    // 새 저장소의 기본 remote 이름.
+    in-out property <string> default-remote;
+    // default branch를 모를 때 `git ls-remote` 허용.
+    in-out property <bool> allow-remote-query;
+    // Cleanup
+    // 보호 branch pattern. 한 줄에 하나.
+    in-out property <string> protected-patterns;
+    // Clean All 전에 확인 dialog 표시.
+    in-out property <bool> confirm-clean-all;
+    // 설정 파일 폴더 (표시용).
+    in property <string> data-dir;
+    // 입력 검증·저장 오류. 비어 있으면 숨긴다.
+    in property <string> error;
+
+    // Save 버튼. Rust 쪽에서 검증 후 저장한다.
+    callback save();
+    // Cancel 버튼. 창 닫기와 같은 처리를 한다.
+    callback cancel();
+    // 설정 파일 폴더를 Finder/Explorer로 연다.
+    callback open-data-dir();
+
+    title: "Settings";
+    preferred-width: 480px;
+
+    VerticalBox {
+        GroupBox {
+            title: "General";
+            VerticalLayout {
+                CheckBox { text: "Start at login"; checked <=> root.start-at-login; }
+                CheckBox { text: "Start minimized to tray"; checked <=> root.start-minimized; }
+                CheckBox { text: "Open main window on tray left-click"; checked <=> root.open-on-left-click; }
+            }
+        }
+        GroupBox {
+            title: "Git";
+            VerticalLayout {
+                GridBox {
+                    padding: 0;
+                    Row {
+                        Text { text: "Git executable"; vertical-alignment: center; }
+                        LineEdit { text <=> root.git-path; placeholder-text: "Auto (git on PATH)"; }
+                    }
+                    Row {
+                        Text { text: "Default remote"; vertical-alignment: center; }
+                        LineEdit { text <=> root.default-remote; placeholder-text: "origin"; }
+                    }
+                }
+                CheckBox {
+                    text: "Allow remote query when default branch is unknown";
+                    checked <=> root.allow-remote-query;
+                }
+            }
+        }
+        GroupBox {
+            title: "Cleanup";
+            VerticalLayout {
+                Text { text: "Protected branch patterns (one per line, * matches anything)"; wrap: word-wrap; }
+                TextEdit { text <=> root.protected-patterns; min-height: 60px; }
+                CheckBox { text: "Confirm before Clean All"; checked <=> root.confirm-clean-all; }
+            }
+        }
+        HorizontalBox {
+            padding: 0;
+            Text {
+                text: "Settings folder: " + root.data-dir;
+                font-size: 11px;
+                opacity: 0.7;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Button {
+                text: "Open";
+                clicked => { root.open-data-dir(); }
+            }
+        }
+        if root.error != "": Text {
+            text: root.error;
+            wrap: word-wrap;
+        }
+        HorizontalBox {
+            padding: 0;
+            alignment: end;
+            Button {
+                text: "Cancel";
+                clicked => { root.cancel(); }
+            }
+            Button {
+                text: "Save";
+                primary: true;
+                clicked => { root.save(); }
+            }
+        }
+    }
+}

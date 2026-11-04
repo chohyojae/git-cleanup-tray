@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+// 앱 정보와 GPL 안내 창. 필요할 때만 만들고 닫으면 Rust 쪽에서 drop한다.
+
+import { Button, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export component AboutWindow inherits Window {
+    // `Cargo.toml`의 package version. Rust 쪽에서 넣는다.
+    in property <string> version;
+
+    // Close 버튼. 창 닫기와 같은 처리를 한다.
+    callback close-requested();
+
+    title: "About Git Cleanup Tray";
+    preferred-width: 400px;
+
+    VerticalBox {
+        Text {
+            text: "Git Cleanup Tray";
+            font-size: 18px;
+            font-weight: 600;
+        }
+        Text {
+            text: "Version " + root.version;
+        }
+        Text {
+            text: "Safely removes local branches, linked worktrees and refs/remote/* refs that are already merged into the base branch.";
+            wrap: word-wrap;
+        }
+        // GPLv3 배포 시 사용자에게 알려야 하는 license와 무보증 안내 (PLAN 3장).
+        Text {
+            text: "This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License version 3 (GPL-3.0-only).";
+            wrap: word-wrap;
+        }
+        Text {
+            text: "This program comes with ABSOLUTELY NO WARRANTY.";
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Built with Slint under the GNU GPLv3.";
+            wrap: word-wrap;
+        }
+        HorizontalBox {
+            padding: 0;
+            alignment: end;
+            Button {
+                text: "Close";
+                primary: true;
+                clicked => { root.close-requested(); }
+            }
+        }
+    }
+}

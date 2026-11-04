@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+// 시스템 트레이(macOS 메뉴 막대) 아이콘과 메뉴.
+// 앱 lifetime의 기준이 되는 component로, 메인 창이 없어도 이 component만으로 event loop가 유지된다.
+
+export component AppTray inherits SystemTrayIcon {
+    // 마지막 실행 결과 요약. Rust의 application state가 갱신한다.
+    in property <string> last-result: "No runs yet";
+    // 작업 실행 중에는 Scan All / Clean All을 비활성화해 중복 실행을 막는다.
+    in property <bool> busy: false;
+    // tooltip에 붙일 상태 문구 (Scanning, Error 등). idle이면 빈 문자열이다.
+    in property <string> status: "";
+
+    // 메뉴 항목별 요청. 처리 로직은 모두 Rust(app module)에 둔다.
+    callback open-requested();
+    // icon 좌클릭. 메인 창을 열지는 설정(open on left-click)에 따라 Rust 쪽에서 정한다.
+    callback icon-clicked();
+    callback scan-all-requested();
+    callback clean-all-requested();
+    callback settings-requested();
+    callback about-requested();
+    callback quit-requested();
+
+    icon: @image-url("icons/tray.svg");
+    // 아이콘 모양은 바꾸지 않고 tooltip으로 상태를 알린다 (PLAN 11장 Tray 상태).
+    tooltip: root.status == "" ? "Git Cleanup Tray" : "Git Cleanup Tray - " + root.status;
+
+    // Windows에서는 icon 좌클릭 시 호출된다. macOS는 menu가 있으면 menu를 연다.
+    clicked => {
+        root.icon-clicked();
+    }
+
+    Menu {
+        MenuItem {
+            title: "Open";
+            activated => { root.open-requested(); }
+        }
+        MenuItem {
+            title: "Scan All";
+            enabled: !root.busy;
+            activated => { root.scan-all-requested(); }
+        }
+        MenuItem {
+            title: "Clean All";
+            enabled: !root.busy;
+            activated => { root.clean-all-requested(); }
+        }
+        MenuSeparator {}
+        MenuItem {
+            title: "Last result: " + root.last-result;
+            enabled: false;
+        }
+        MenuSeparator {}
+        MenuItem {
+            title: "Settings";
+            activated => { root.settings-requested(); }
+        }
+        MenuItem {
+            title: "About";
+            activated => { root.about-requested(); }
+        }
+        MenuItem {
+            title: "Quit";
+            activated => { root.quit-requested(); }
+        }
+    }
+}

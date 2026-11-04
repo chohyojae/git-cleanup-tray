@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+// 메인 창 저장소 목록의 한 줄 (PLAN 10장).
+// 상태는 색상이 아니라 문구로 보여준다 (PLAN 23장).
+
+import { Button, HorizontalBox, VerticalBox, Palette } from "std-widgets.slint";
+import { RepositoryRowData } from "components/types.slint";
+
+export component RepositoryRow inherits Rectangle {
+    // 표시할 저장소 정보.
+    in property <RepositoryRowData> data;
+    // 작업 실행 중에는 Scan / Clean 버튼을 비활성화한다.
+    in property <bool> busy;
+
+    // 줄 단위 요청. 어떤 저장소인지는 메인 창이 index로 붙인다.
+    callback scan();
+    callback clean();
+    callback details();
+    callback edit();
+    callback toggle-enabled();
+    callback open-folder();
+    callback open-terminal();
+    callback remove();
+
+    border-width: 1px;
+    border-radius: 6px;
+    border-color: Palette.border;
+    background: Palette.alternate-background;
+
+    VerticalBox {
+        HorizontalBox {
+            padding: 0;
+            Text {
+                text: root.data.enabled ? root.data.name : root.data.name + " (disabled)";
+                font-weight: 600;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Text {
+                text: root.data.status;
+                horizontal-alignment: right;
+            }
+        }
+        HorizontalBox {
+            padding: 0;
+            Text {
+                text: root.data.path;
+                font-size: 11px;
+                opacity: 0.7;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            if root.data.base != "": Text {
+                text: "Base: " + root.data.base;
+                font-size: 11px;
+                opacity: 0.7;
+            }
+        }
+        HorizontalBox {
+            padding: 0;
+            Text {
+                text: root.data.activity;
+                font-size: 11px;
+                opacity: 0.7;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Button {
+                text: "Scan";
+                enabled: !root.busy;
+                clicked => { root.scan(); }
+            }
+            Button {
+                text: "Clean";
+                enabled: !root.busy;
+                clicked => { root.clean(); }
+            }
+            Button {
+                text: "Details";
+                enabled: !root.busy;
+                clicked => { root.details(); }
+            }
+            more-button := Button {
+                text: "More";
+                clicked => { more.show(); }
+            }
+        }
+    }
+
+    // More 버튼 아래에 뜨는 메뉴. 저장소 자체를 바꾸지 않는 동작만 둔다.
+    more := PopupWindow {
+        x: more-button.x + more-button.width - 160px;
+        y: root.height - 4px;
+        width: 160px;
+
+        Rectangle {
+            background: Palette.background;
+            border-width: 1px;
+            border-radius: 6px;
+            border-color: Palette.border;
+        }
+        VerticalLayout {
+            padding: 4px;
+            spacing: 2px;
+            Button {
+                text: "Edit…";
+                enabled: !root.busy;
+                clicked => { root.edit(); }
+            }
+            Button {
+                text: root.data.enabled ? "Disable" : "Enable";
+                enabled: !root.busy;
+                clicked => { root.toggle-enabled(); }
+            }
+            Button {
+                text: "Open Folder";
+                clicked => { root.open-folder(); }
+            }
+            Button {
+                text: "Open Terminal";
+                clicked => { root.open-terminal(); }
+            }
+            Button {
+                text: "Remove";
+                enabled: !root.busy;
+                clicked => { root.remove(); }
+            }
+        }
+    }
+}

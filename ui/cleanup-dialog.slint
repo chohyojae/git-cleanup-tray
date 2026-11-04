@@ -1,0 +1,154 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+// Clean All 확인과 결과를 보여주는 dialog (PLAN 12, 13장).
+// 같은 창이 확인 → 실행 중 → 결과 순서로 바뀐다. Rust 쪽에서 필요할 때만 만들고 닫으면 drop한다.
+
+import { Button, VerticalBox, HorizontalBox, GridBox, ListView } from "std-widgets.slint";
+
+// dialog가 보여주는 단계.
+export enum DialogStage {
+    // 삭제 전 요약과 확인 버튼.
+    confirm,
+    // 실행 중. 버튼을 비활성화한다.
+    running,
+    // 실행 결과.
+    done,
+}
+
+// 이름과 숫자 한 줄. 상태를 색상이 아니라 문구로 구분한다 (PLAN 23장).
+component CountRow inherits HorizontalBox {
+    // 항목 이름.
+    in property <string> label;
+    // 항목 수.
+    in property <int> count;
+
+    padding: 0;
+    Text {
+        text: root.label;
+        horizontal-stretch: 1;
+    }
+    Text {
+        text: root.count;
+        horizontal-alignment: right;
+    }
+}
+
+export component CleanupDialog inherits Window {
+    // 현재 단계.
+    in property <DialogStage> stage: DialogStage.confirm;
+    // 상단 제목 (예: "Clean up 16 items?", "Removed 15 items").
+    in property <string> heading;
+    // confirm 단계에서는 삭제 예정 수, done 단계에서는 실제 처리 수.
+    in property <int> repositories;
+    in property <int> worktrees;
+    in property <int> branches;
+    in property <int> custom-refs;
+    in property <int> skipped;
+    in property <int> errors;
+    // 사용자가 확인할 오류·건너뜀 상세 ("저장소: 내용"). Rust 쪽에서 개수를 제한해 넘긴다.
+    in property <[string]> problems;
+    // running 단계의 진행 상황 ("Cleaning 1 of 3: Project A").
+    in property <string> progress;
+
+    // confirm 단계의 Clean 버튼.
+    callback confirmed();
+    // confirm 단계 Cancel 또는 done 단계 Close 버튼. 창 닫기와 같은 처리를 한다.
+    callback dismissed();
+    // running 단계 Cancel 버튼. 진행 중인 저장소까지 끝내고 멈춘다.
+    callback cancel-run();
+
+    title: "Clean All";
+    preferred-width: 420px;
+    min-width: 360px;
+
+    VerticalBox {
+        Text {
+            text: root.heading;
+            font-size: 16px;
+            font-weight: 600;
+            wrap: word-wrap;
+        }
+
+        VerticalBox {
+            padding: 0;
+            CountRow {
+                label: "Repositories";
+                count: root.repositories;
+            }
+            CountRow {
+                label: "Worktrees";
+                count: root.worktrees;
+            }
+            CountRow {
+                label: "Local branches";
+                count: root.branches;
+            }
+            CountRow {
+                label: "Custom refs";
+                count: root.custom-refs;
+            }
+            CountRow {
+                label: "Skipped";
+                count: root.skipped;
+            }
+            if root.errors > 0: CountRow {
+                label: "Errors";
+                count: root.errors;
+            }
+        }
+
+        // 삭제하지 않는 것을 확인 전에 분명히 알린다 (PLAN 13장 필수 문구).
+        if root.stage == DialogStage.confirm: VerticalBox {
+            padding: 0;
+            Text {
+                text: "Remote branches will not be deleted.";
+                wrap: word-wrap;
+            }
+            Text {
+                text: "Worktrees with uncommitted or untracked files will be skipped.";
+                wrap: word-wrap;
+            }
+        }
+
+        if root.stage == DialogStage.running && root.progress != "": Text {
+            text: root.progress;
+            wrap: word-wrap;
+        }
+
+        if root.problems.length > 0: ListView {
+            min-height: 60px;
+            preferred-height: 120px;
+            for line in root.problems: Text {
+                text: line;
+                wrap: word-wrap;
+            }
+        }
+
+        HorizontalBox {
+            padding: 0;
+            alignment: end;
+            if root.stage == DialogStage.confirm: Button {
+                text: "Cancel";
+                clicked => { root.dismissed(); }
+            }
+            if root.stage == DialogStage.running: Button {
+                text: "Cancel";
+                clicked => { root.cancel-run(); }
+            }
+            if root.stage == DialogStage.confirm: Button {
+                text: "Clean " + (root.worktrees + root.branches + root.custom-refs) + " items";
+                primary: true;
+                clicked => { root.confirmed(); }
+            }
+            if root.stage == DialogStage.running: Button {
+                text: "Cleaning…";
+                enabled: false;
+            }
+            if root.stage == DialogStage.done: Button {
+                text: "Close";
+                primary: true;
+                clicked => { root.dismissed(); }
+            }
+        }
+    }
+}

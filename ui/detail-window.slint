@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+// 저장소 하나의 정리 계획을 종류별로 보여주는 상세 창 (PLAN 14장).
+// 실제 ref 이름과 Git 오류(stderr, exit code)를 그대로 확인할 수 있게 한다 (PLAN 23, 25장).
+
+import { Button, VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
+import { DetailSection } from "components/types.slint";
+
+export component DetailWindow inherits Window {
+    // 저장소 이름.
+    in property <string> heading;
+    // base branch와 경로.
+    in property <string> subheading;
+    // 종류별 항목. 비어 있는 종류는 Rust 쪽에서 넣지 않는다.
+    in property <[DetailSection]> sections;
+
+    // Close 버튼. 창 닫기와 같은 처리를 한다.
+    callback close-requested();
+
+    title: "Details - " + root.heading;
+    preferred-width: 560px;
+    preferred-height: 480px;
+    min-width: 400px;
+    min-height: 300px;
+
+    VerticalBox {
+        Text {
+            text: root.heading;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        Text {
+            text: root.subheading;
+            wrap: word-wrap;
+            opacity: 0.7;
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                spacing: 4px;
+                if root.sections.length == 0: Text {
+                    text: "Nothing to clean.";
+                }
+                for section in root.sections: VerticalLayout {
+                    spacing: 4px;
+                    padding-bottom: 8px;
+                    Text {
+                        text: section.title + " (" + section.items.length + ")";
+                        font-weight: 600;
+                    }
+                    for item in section.items: VerticalLayout {
+                        padding-left: 12px;
+                        Text {
+                            text: item.title;
+                            wrap: word-wrap;
+                        }
+                        if item.subtitle != "": Text {
+                            text: item.subtitle;
+                            font-size: 11px;
+                            opacity: 0.7;
+                            wrap: word-wrap;
+                        }
+                        if item.note != "": Text {
+                            text: item.note;
+                            font-size: 11px;
+                            opacity: 0.7;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+        HorizontalBox {
+            padding: 0;
+            alignment: end;
+            Button {
+                text: "Close";
+                primary: true;
+                clicked => { root.close-requested(); }
+            }
+        }
+    }
+}

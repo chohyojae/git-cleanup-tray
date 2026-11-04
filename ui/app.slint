@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+// build.rs가 compile하는 UI entry. Rust 쪽에서 쓰는 top-level component를 모두 여기서 export한다.
+
+import { AppTray } from "tray.slint";
+import { MainWindow } from "main-window.slint";
+import { CleanupDialog, DialogStage } from "cleanup-dialog.slint";
+import { AboutWindow } from "about-window.slint";
+import { DetailWindow } from "detail-window.slint";
+import { RepositoryEditor } from "repository-editor.slint";
+import { SettingsWindow } from "settings.slint";
+import { RepositoryRowData, DetailItem, DetailSection } from "components/types.slint";
+
+export {
+    AppTray,
+    MainWindow,
+    CleanupDialog,
+    DialogStage,
+    AboutWindow,
+    DetailWindow,
+    RepositoryEditor,
+    SettingsWindow,
+    RepositoryRowData,
+    DetailItem,
+    DetailSection,
+}

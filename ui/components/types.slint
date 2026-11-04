@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+// 여러 창이 함께 쓰는 data 구조. 값은 모두 Rust(`ui::models`)에서 만들어 넣는다.
+
+// 메인 창 저장소 목록의 한 줄 (PLAN 10장 Repository Row).
+export struct RepositoryRowData {
+    // 표시 이름.
+    name: string,
+    // 줄여 쓴 저장소 경로 (home은 `~`).
+    path: string,
+    // 마지막 Scan에서 판별한 base branch. 아직 모르면 빈 문자열.
+    base: string,
+    // 상태 문구 ("3 removable / 1 warning", "Clean", "Not scanned" 등).
+    status: string,
+    // 마지막 Scan / cleanup 시각 문구.
+    activity: string,
+    // Scan All / Clean All 대상 여부.
+    enabled: bool,
+}
+
+// 상세 화면 항목 하나 (PLAN 14장).
+export struct DetailItem {
+    // 주 이름 (branch, ref, worktree branch, 오류 메시지).
+    title: string,
+    // 보조 정보 (worktree 경로 등). 없으면 빈 문자열.
+    subtitle: string,
+    // 상태 설명 ("Already merged into main", 건너뛴 이유 등).
+    note: string,
+}
+
+// 상세 화면의 종류별 묶음 (Worktrees, Local Branches, Custom Refs, Skipped, Errors).
+export struct DetailSection {
+    // 묶음 제목.
+    title: string,
+    // 항목 목록.
+    items: [DetailItem],
+}

@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+// 등록 저장소 목록을 보여주는 메인 창 (PLAN 10장).
+// 사용자가 Open을 선택했을 때만 생성하고, 닫으면 Rust 쪽에서 instance를 drop해 메모리를 돌려준다.
+
+import { Button, VerticalBox, HorizontalBox, ListView } from "std-widgets.slint";
+import { RepositoryRowData } from "components/types.slint";
+import { RepositoryRow } from "repository-row.slint";
+
+export component MainWindow inherits Window {
+    // 등록 저장소 목록. Rust 쪽 `VecModel`을 재사용해 바뀐 줄만 갱신한다.
+    in property <[RepositoryRowData]> repositories;
+    // 작업 실행 중에는 버튼을 비활성화해 double-click 중복 실행을 막는다.
+    in property <bool> busy: false;
+    // 진행 상황 ("Scanning 2 of 5: Project B"). 비어 있으면 진행 표시줄을 숨긴다.
+    in property <string> progress;
+    // 진행 중인 작업을 취소할 수 있으면 `true` (Scan, Clean).
+    in property <bool> can-cancel: false;
+    // 하단 안내 문구 (저장소 추가 실패 등). 비어 있으면 숨긴다.
+    in property <string> notice;
+
+    // 상단 버튼 요청. 처리 로직은 Rust(app module)에 둔다.
+    callback add-requested();
+    callback scan-all-requested();
+    callback clean-all-requested();
+    callback settings-requested();
+    callback cancel-requested();
+    // 저장소 줄 요청. 인자는 `repositories` 안의 index다.
+    callback scan-requested(int);
+    callback clean-requested(int);
+    callback details-requested(int);
+    callback edit-requested(int);
+    callback toggle-requested(int);
+    callback open-folder-requested(int);
+    callback open-terminal-requested(int);
+    callback remove-requested(int);
+
+    title: "Git Cleanup Tray";
+    preferred-width: 640px;
+    preferred-height: 480px;
+    min-width: 480px;
+    min-height: 320px;
+
+    VerticalBox {
+        HorizontalBox {
+            padding: 0;
+            Text {
+                text: "Repositories";
+                font-size: 18px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Button {
+                text: "Add…";
+                enabled: !root.busy;
+                clicked => { root.add-requested(); }
+            }
+            Button {
+                text: "Scan All";
+                enabled: !root.busy;
+                clicked => { root.scan-all-requested(); }
+            }
+            Button {
+                text: "Clean All";
+                enabled: !root.busy;
+                clicked => { root.clean-all-requested(); }
+            }
+            Button {
+                text: "Settings";
+                clicked => { root.settings-requested(); }
+            }
+        }
+
+        if root.repositories.length == 0: Text {
+            text: "No repositories registered. Use Add… to register a Git repository.";
+            wrap: word-wrap;
+            vertical-stretch: 1;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        if root.repositories.length > 0: ListView {
+            vertical-stretch: 1;
+            for row[index] in root.repositories: VerticalLayout {
+                padding-bottom: 6px;
+                RepositoryRow {
+                    data: row;
+                    busy: root.busy;
+                    scan => { root.scan-requested(index); }
+                    clean => { root.clean-requested(index); }
+                    details => { root.details-requested(index); }
+                    edit => { root.edit-requested(index); }
+                    toggle-enabled => { root.toggle-requested(index); }
+                    open-folder => { root.open-folder-requested(index); }
+                    open-terminal => { root.open-terminal-requested(index); }
+                    remove => { root.remove-requested(index); }
+                }
+            }
+        }
+
+        if root.progress != "": HorizontalBox {
+            padding: 0;
+            Text {
+                text: root.progress;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            if root.can-cancel: Button {
+                text: "Cancel";
+                clicked => { root.cancel-requested(); }
+            }
+        }
+        if root.notice != "": Text {
+            text: root.notice;
+            wrap: word-wrap;
+        }
+    }
+}
