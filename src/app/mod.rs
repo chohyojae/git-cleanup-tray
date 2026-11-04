@@ -15,7 +15,9 @@
 //! 저장소에 두 작업이 겹치지 않는다 (PLAN 19장).
 
 pub mod commands;
+pub mod maintenance;
 pub mod registration;
+mod schedule;
 pub mod state;
 pub mod tasks;
 pub mod text;
@@ -25,7 +27,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, PlatformError, VecModel};
 
@@ -34,7 +36,7 @@ use crate::git::repository::RepositoryId;
 use crate::jobs::cancellation::CancellationToken;
 use crate::jobs::{self, Job};
 use crate::storage::repository_store::RepositoryConfig;
-use crate::storage::settings_store::AppSettings;
+use crate::storage::settings_store::{AppSettings, MaintenanceInterval};
 use crate::ui::{
     AboutWindow, AppTray, CleanupDialog, DetailWindow, DialogStage, MainWindow, RepositoryEditor,
     RepositoryRowData, SettingsWindow,
@@ -80,6 +82,10 @@ struct App {
     registration_queue: RefCell<RegistrationQueue>,
     /// 드롭 이벤트를 한 묶음으로 모으는 일회성 timer.
     registration_timer: slint::Timer,
+    /// 주기 작업의 남은 시간. 다른 작업 중에는 흐르지 않는다.
+    schedule: RefCell<schedule::Schedule>,
+    /// 주기 작업 하나만 예약하는 일회성 timer.
+    maintenance_timer: slint::Timer,
     /// native 폴더 선택 창의 중복 열기를 막는다.
     folder_picker_open: Cell<bool>,
 }
@@ -193,6 +199,8 @@ pub fn run() -> Result<(), PlatformError> {
         notice: RefCell::new(String::new()),
         registration_queue: RefCell::new(RegistrationQueue::default()),
         registration_timer: slint::Timer::default(),
+        schedule: RefCell::new(schedule::Schedule::default()),
+        maintenance_timer: slint::Timer::default(),
         folder_picker_open: Cell::new(false),
     });
     connect_tray(&app.tray);
@@ -220,6 +228,7 @@ fn connect_tray(tray: &AppTray) {
     tray.on_icon_clicked(|| dispatch(AppCommand::TrayClicked));
     tray.on_open_requested(|| dispatch(AppCommand::OpenMainWindow));
     tray.on_scan_all_requested(|| dispatch(AppCommand::ScanAll));
+    tray.on_update_all_requested(|| dispatch(AppCommand::UpdateAll));
     tray.on_clean_all_requested(|| dispatch(AppCommand::CleanAll));
     tray.on_settings_requested(|| dispatch(AppCommand::OpenSettings));
     tray.on_about_requested(|| dispatch(AppCommand::ShowAbout));
@@ -238,6 +247,8 @@ fn dispatch(command: AppCommand) {
             }
         }
         AppCommand::ScanAll => app.start_scan(ScanPurpose::ScanAll),
+        AppCommand::UpdateAll => app.start_maintenance(ScanScope::Enabled, false),
+        AppCommand::UpdateRepository(id) => app.start_maintenance(ScanScope::Only(id), false),
         AppCommand::CleanAll => app.start_scan(ScanPurpose::CleanAll),
         AppCommand::CancelJob => app.cancel_job(),
         AppCommand::AddRepository => app.pick_repository_folder(),
@@ -343,11 +354,13 @@ impl App {
             log::info!("{name} ignored: another job is running");
             return false;
         }
+        self.pause_maintenance();
         let spawned = jobs::spawn(name, work, move |output| {
             deliver_to_ui(move |app| {
                 app.finish_job();
                 finish(app, output);
                 app.schedule_registration();
+                app.resume_maintenance();
             });
         });
         match spawned {
@@ -359,6 +372,7 @@ impl App {
             Err(error) => {
                 log::error!("failed to start {name}: {error}");
                 self.set_notice(&format!("Could not start background work: {error}"));
+                self.resume_maintenance();
                 false
             }
         }
@@ -418,6 +432,7 @@ impl App {
                 self.set_status(TrayStatus::Error);
             }
         }
+        self.configure_maintenance();
         self.refresh_rows();
         let start_minimized = self.settings.borrow().start_minimized;
         if !start_minimized {
@@ -621,6 +636,7 @@ impl App {
         if self.is_busy() || self.folder_picker_open.replace(true) {
             return;
         }
+        self.pause_maintenance();
         self.refresh_busy();
         let spawned = slint::spawn_local(async {
             let folders = rfd::AsyncFileDialog::new()
@@ -639,6 +655,7 @@ impl App {
                 } else {
                     app.schedule_registration();
                 }
+                app.resume_maintenance();
             });
         });
         if let Err(error) = spawned {
@@ -649,6 +666,7 @@ impl App {
                 "Could not open the folder picker. You can drop repository folders here.",
             );
             self.schedule_registration();
+            self.resume_maintenance();
         }
     }
 
@@ -810,7 +828,12 @@ impl App {
             move |_| tasks::save_settings(&settings, apply_autostart).map(|()| settings),
             |app, result| match result {
                 Some(Ok(settings)) => {
+                    let interval_changed = app.settings.borrow().maintenance_interval_minutes
+                        != settings.maintenance_interval_minutes;
                     *app.settings.borrow_mut() = settings;
+                    if interval_changed {
+                        app.configure_maintenance();
+                    }
                     hide_and_release(|app| &app.settings_window);
                 }
                 Some(Err(error)) => app.set_settings_error(&format!("Could not save: {error}")),
@@ -824,6 +847,7 @@ impl App {
 
     /// 앱을 종료한다. 실행 중인 작업에는 취소를 요청하고, 확인 대기 중인 계획은 버린다.
     fn quit(&self) {
+        self.maintenance_timer.stop();
         if let Some(running) = self.job.borrow().as_ref() {
             running.job.cancel();
         }
@@ -831,6 +855,147 @@ impl App {
         if let Err(error) = slint::quit_event_loop() {
             log::error!("failed to quit event loop: {error}");
         }
+    }
+
+    /// 사용자가 저장한 간격을 적용한다. 꺼져 있으면 timer를 남기지 않는다.
+    fn configure_maintenance(&self) {
+        self.maintenance_timer.stop();
+        self.schedule.borrow_mut().configure(
+            self.settings
+                .borrow()
+                .maintenance_interval_minutes
+                .map(MaintenanceInterval::duration),
+        );
+        self.resume_maintenance();
+    }
+
+    /// 다른 작업을 시작하기 전에 남은 시간을 보관하고 OS timer를 멈춘다.
+    fn pause_maintenance(&self) {
+        self.maintenance_timer.stop();
+        self.schedule.borrow_mut().pause(Instant::now());
+    }
+
+    /// 작업과 확인 대기가 모두 끝나면 남은 시간부터 재개한다. polling은 하지 않는다.
+    fn resume_maintenance(&self) {
+        if self.is_busy() || self.folder_picker_open.get() {
+            return;
+        }
+        let delay = self.schedule.borrow_mut().resume(Instant::now());
+        if let Some(delay) = delay {
+            self.maintenance_timer
+                .start(slint::TimerMode::SingleShot, delay, || {
+                    with_app(|app| {
+                        app.schedule.borrow_mut().fired();
+                        app.start_maintenance(ScanScope::Enabled, true);
+                    });
+                });
+        }
+    }
+
+    /// 수동 최신화 또는 미리 동의한 주기 최신화·정리를 하나의 worker에서 실행한다.
+    fn start_maintenance(&self, scope: ScanScope, clean: bool) {
+        if self.is_busy() {
+            return;
+        }
+        let started = self.start_job(
+            "update",
+            true,
+            move |cancel| {
+                maintenance::run(
+                    &tasks::data_dir()?,
+                    scope,
+                    clean,
+                    cancel,
+                    &mut progress_to_ui,
+                )
+            },
+            move |app, report| app.finish_maintenance(report, !clean),
+        );
+        if started {
+            self.set_notice("");
+            self.set_status(TrayStatus::Updating);
+        }
+    }
+
+    /// 최신화 결과와 주기 정리 결과를 목록·tray에 반영한다. 자동 실행은 창을 만들지 않는다.
+    fn finish_maintenance(
+        &self,
+        report: Option<CleanupResult<maintenance::MaintenanceReport>>,
+        show_detail: bool,
+    ) {
+        let report = match report {
+            Some(Ok(report)) => report,
+            Some(Err(error)) => {
+                self.set_last_result(&format!("Update failed: {error}"));
+                self.set_notice(&format!("Update failed: {error}"));
+                self.set_status(TrayStatus::Error);
+                return;
+            }
+            None => {
+                self.set_last_result("Update stopped by an internal error");
+                self.set_status(TrayStatus::Error);
+                return;
+            }
+        };
+        self.replace_repositories(report.repositories);
+        for (id, outcome) in report.summaries {
+            self.update_summary(id, |summary| summary.outcome = outcome);
+        }
+        let mut errors = report.errors;
+        let mut skipped = report.skipped;
+        let mut summary = format!(
+            "Updated {} branches · {} skipped · {} errors",
+            report.updated, skipped, errors
+        );
+        let mut problems = report.problems;
+        if let Some(cleanup) = report.cleanup {
+            errors += cleanup.totals.errors;
+            skipped += cleanup.totals.skipped;
+            summary.push_str(" · ");
+            summary.push_str(&text::cleanup_summary(&cleanup.totals, cleanup.cancelled));
+            for (id, outcome) in cleanup.summaries {
+                self.update_summary(id, |entry| {
+                    entry.outcome = outcome;
+                    entry.last_cleanup = Some(cleanup.finished_at);
+                });
+            }
+            problems.extend(
+                cleanup
+                    .problems
+                    .into_iter()
+                    .take(50_usize.saturating_sub(problems.len())),
+            );
+        }
+        if report.cancelled {
+            summary.push_str(" (cancelled)");
+        }
+        self.set_last_result(&summary);
+        self.set_notice(&summary);
+        if show_detail && !problems.is_empty() {
+            self.open_detail(&tasks::DetailReport {
+                heading: String::from("Fetch and update"),
+                subheading: summary,
+                sections: vec![(
+                    "Skipped and errors (up to 50)",
+                    problems
+                        .into_iter()
+                        .map(|message| tasks::DetailLine {
+                            title: message,
+                            subtitle: String::new(),
+                            note: String::new(),
+                        })
+                        .collect(),
+                )],
+            });
+        }
+        self.refresh_rows();
+        self.set_status(if errors > 0 {
+            TrayStatus::Error
+        } else if skipped > 0 {
+            TrayStatus::AttentionRequired
+        } else {
+            TrayStatus::Idle
+        });
     }
 
     /// 메인 창 목록을 현재 저장소 상태로 맞춘다. 창이 닫혀 있으면 아무것도 하지 않는다.

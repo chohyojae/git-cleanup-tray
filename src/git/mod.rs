@@ -13,3 +13,5 @@ pub mod refs;
 pub mod repository;
 pub mod runner;
 pub mod worktree;
+
+pub mod sync;

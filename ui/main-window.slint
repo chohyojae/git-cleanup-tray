@@ -27,11 +27,15 @@ export component MainWindow inherits Window {
     callback add-requested();
     callback scan-all-requested();
     callback clean-all-requested();
+    // 등록된 remote를 fetch하고 로컬 브랜치를 fast-forward한다.
+    callback update-all-requested();
     callback settings-requested();
     callback cancel-requested();
     // 저장소 줄 요청. 인자는 `repositories` 안의 index다.
     callback scan-requested(int);
     callback clean-requested(int);
+    // 저장소 하나를 fetch하고 최신화한다.
+    callback update-requested(int);
     callback details-requested(int);
     callback edit-requested(int);
     callback toggle-requested(int);
@@ -40,9 +44,9 @@ export component MainWindow inherits Window {
     callback remove-requested(int);
 
     title: "Git Cleanup Tray";
-    preferred-width: 640px;
+    preferred-width: 780px;
     preferred-height: 480px;
-    min-width: 480px;
+    min-width: 740px;
     min-height: 320px;
 
     VerticalBox {
@@ -68,6 +72,11 @@ export component MainWindow inherits Window {
                 text: "Clean All";
                 enabled: !root.busy;
                 clicked => { root.clean-all-requested(); }
+            }
+            Button {
+                text: "Update All";
+                enabled: !root.busy;
+                clicked => { root.update-all-requested(); }
             }
             Button {
                 text: "Settings";
@@ -97,6 +106,7 @@ export component MainWindow inherits Window {
                     data: row;
                     busy: root.busy;
                     scan => { root.scan-requested(index); }
+                    update => { root.update-requested(index); }
                     clean => { root.clean-requested(index); }
                     details => { root.details-requested(index); }
                     edit => { root.edit-requested(index); }

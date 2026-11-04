@@ -18,7 +18,7 @@ use crate::git::repository::RepositoryId;
 use crate::jobs::batch::{PlanTotals, ResultTotals};
 use crate::storage;
 use crate::storage::repository_store::RepositoryConfig;
-use crate::storage::settings_store::AppSettings;
+use crate::storage::settings_store::{AppSettings, MaintenanceInterval};
 use crate::ui::{
     AboutWindow, CleanupDialog, DetailItem, DetailSection, DetailWindow, DialogStage, MainWindow,
     RepositoryEditor, SettingsWindow,
@@ -189,6 +189,7 @@ impl App {
             log::info!("cleanup cancelled before execution");
             self.refresh_busy();
             self.schedule_registration();
+            self.resume_maintenance();
         }
         if hide {
             hide_and_release(|app| &app.cleanup_dialog);
@@ -439,6 +440,8 @@ fn connect_main_window(window: &MainWindow) {
     });
     window.on_add_requested(|| dispatch(AppCommand::AddRepository));
     window.on_scan_all_requested(|| dispatch(AppCommand::ScanAll));
+    window.on_update_all_requested(|| dispatch(AppCommand::UpdateAll));
+    window.on_update_requested(|index| dispatch_row(index, AppCommand::UpdateRepository));
     window.on_clean_all_requested(|| dispatch(AppCommand::CleanAll));
     window.on_settings_requested(|| dispatch(AppCommand::OpenSettings));
     window.on_cancel_requested(|| dispatch(AppCommand::CancelJob));
@@ -509,6 +512,14 @@ fn fill_settings(window: &SettingsWindow, settings: &AppSettings) {
     window.set_allow_remote_query(settings.allow_remote_query);
     window.set_protected_patterns(settings.protected_branch_patterns.join("\n").into());
     window.set_confirm_clean_all(settings.confirm_clean_all);
+    window.set_auto_maintenance(settings.maintenance_interval_minutes.is_some());
+    window.set_interval_minutes(
+        settings
+            .maintenance_interval_minutes
+            .map_or(60, MaintenanceInterval::minutes)
+            .to_string()
+            .into(),
+    );
     window.set_data_dir(
         storage::app_data_dir()
             .map(|dir| dir.display().to_string())
@@ -531,6 +542,19 @@ fn validate_settings(
     if default_remote.is_empty() || default_remote.contains(char::is_whitespace) {
         return Err("Default remote must be a single name such as origin.");
     }
+    let maintenance_interval_minutes = if window.get_auto_maintenance() {
+        Some(
+            window
+                .get_interval_minutes()
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .and_then(MaintenanceInterval::new)
+                .ok_or("Interval must be a whole number between 1 and 10080 minutes.")?,
+        )
+    } else {
+        None
+    };
     let git_path = window.get_git_path().trim().to_owned();
     Ok(AppSettings {
         start_at_login: window.get_start_at_login(),
@@ -542,5 +566,6 @@ fn validate_settings(
         protected_branch_patterns: lines(&window.get_protected_patterns()),
         confirm_clean_all: window.get_confirm_clean_all(),
         notify_on_completion: current.notify_on_completion,
+        maintenance_interval_minutes,
     })
 }

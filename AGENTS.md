@@ -69,7 +69,7 @@ cargo build --release     # 성능·크기에 영향을 주는 변경일 때
 
 ### 4.1 idle 상태 (tray만 떠 있을 때)
 
-- polling loop, 주기적 timer, 주기적 Git scan 금지. 모든 작업은 사용자 요청이나 OS event로만 시작한다.
+- polling loop 금지. 기본값에서는 timer나 주기적 Git scan을 만들지 않는다. 사용자가 주기 최신화·정리를 켰을 때만 설정 간격의 일회성 timer를 예약한다. 다른 작업이나 Clean 확인 대기 중에는 timer를 멈추고 남은 시간을 보관하며, 끝나면 남은 시간부터 재개한다. 주기 작업이 끝난 뒤에는 전체 간격으로 다시 예약한다.
 - 시작 시 저장소를 자동 scan하지 않고, 메인 창을 미리 만들지 않는다.
 - 메인 창은 Open 시점에 만들고, 닫으면 숨기지 말고 instance를 drop한다 (`app::show_main_window` 참고). 단, 같은 process 안에서는 drop해도 renderer·폰트·힙 단편화가 남아 메모리가 돌아오지 않는다 (창을 열었다 닫은 뒤 37MB 측정). GUI를 별도 process로 분리하는 구조 변경을 검토 중이다.
 - worker thread를 상주시키지 않는다. 작업 요청 시 생성하고 끝나면 종료한다. thread pool, async runtime(tokio 등)을 들이지 않는다.
@@ -131,7 +131,7 @@ PLAN 8, 15, 24장의 요약. 이 규칙을 약화하는 변경은 하지 않는�
 - `refs/remote/*`(정리 대상)와 `refs/remotes/*`(절대 정리 안 함) 판별은 `git::refs`의 함수만 쓴다. 문자열 `starts_with`를 여기저기 새로 쓰지 않는다.
 - base branch 이름을 추측하지 않는다 (`main`/`master` 하드코딩 금지).
 - planner는 아무것도 바꾸지 않는다. executor는 mutation 직전에 대상마다 상태를 다시 확인하고, 바뀌었으면 `SkipReason::StateChanged`로 넘긴다.
-- dirty, locked, main worktree는 건드리지 않는다.
+- 정리는 dirty, locked, main worktree를 건드리지 않는다. 최신화는 dirty/locked worktree를 건드리지 않고, clean main worktree는 `merge --ff-only --no-autostash`로 갱신할 수 있다.
 - Phase 2(safety test)가 끝나기 전에는 UI의 Clean 버튼을 executor에 연결하지 않는다.
 
 ## 7. 테스트
@@ -164,4 +164,5 @@ PLAN 8, 15, 24장의 요약. 이 규칙을 약화하는 변경은 하지 않는�
 - 문서보다 동작하는 Git core와 자동화 test를 먼저 만든다.
 
 - 저장소 추가는 native 폴더 다중 선택과 메인 창 외부 드롭을 지원한다. 입력한 폴더만 검증하며 하위 저장소를 재귀 검색하지 않는다. 같은 common Git directory는 한 번만 등록하고, 정상 항목을 일괄 저장한다. 다른 작업 중 들어온 드롭은 메모리 대기 목록에 보관했다가 작업 완료 후 처리한다.
-- 외부 드롭은 Slint의 `unstable-winit-030` 창 이벤트 API를 사용한다. 업데이트 시 Windows Explorer와 macOS Finder의 다중 폴더 드롭을 확인한다. 드롭을 모으는 일회성 timer만 사용하며 idle polling은 하지 않는다.
+- 최신화는 등록된 remote를 fetch하고 upstream이 있는 로컬 브랜치만 fast-forward한다. prune, tag 갱신, 자동 stash, rebase, merge commit을 만들지 않는다. fetch/갱신 오류가 있는 저장소는 해당 주기에서 정리하지 않는다. 주기 실행은 기본 OFF이며, 1~10080분 간격으로 사용자가 미리 동의한 최신화 → Scan → Clean을 확인 창 없이 실행한다. `config.json`의 `maintenance_interval_minutes`가 `null`이거나 없으면 OFF다.
+- 외부 드롭은 Slint의 `unstable-winit-030` 창 이벤트 API를 사용한다. 업데이트 시 Windows Explorer와 macOS Finder의 다중 폴더 드롭을 확인한다. 드롭을 모으는 timer와 사용자가 켠 주기 작업 timer는 일회성으로 예약하며 idle polling은 하지 않는다.

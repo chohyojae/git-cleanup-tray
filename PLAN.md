@@ -660,6 +660,18 @@ Disable remote branch deletion
 
 ---
 
+### 주기 최신화·정리 (2026-11-04 추가)
+
+- 수동 `Update All`/저장소 `Update`: 등록 remote fetch → 해당 remote의 upstream이 있는 로컬 branch fast-forward.
+- fetch는 명시한 `refs/remotes/<remote>/*`만 갱신하며 prune/tag 갱신을 하지 않는다.
+- checkout되지 않은 branch는 강제 갱신 없는 로컬 fetch를 사용한다. clean main/linked worktree는 `merge --ff-only --no-autostash --no-overwrite-ignore`로 갱신한다.
+- dirty/locked worktree, 진행 중인 rebase/merge, 로컬 커밋이 앞서거나 갈라진 branch는 보존한다. branch·HEAD를 실행 직전에 다시 확인한다.
+- Settings에서 자동 실행과 간격을 설정한다. `config.json`의 `maintenance_interval_minutes`는 `null`(기본 OFF) 또는 1~10080 사이 정수(분)다. 이전 설정 파일은 OFF로 읽는다.
+- 켜면 앱이 실행 중인 동안 enabled 저장소에 최신화 → 새 Scan → 기존 executor로 Clean을 수행한다. 이 설정은 확인 창 없이 반복 정리하는 데 대한 사전 동의이며, 수동 Clean 확인 설정은 그대로 적용한다.
+- 시작 직후에는 실행하지 않고 설정 간격을 기다린다. 다른 worker/폴더 선택/Clean 확인 대기 중에는 timer를 정지하고 남은 시간을 보관했다가 재개한다. 주기 작업이 끝나면 다음 간격을 처음부터 기다린다. 앱을 다시 시작하면 전체 간격으로 시작하며 누락된 회차를 몰아서 실행하지 않는다.
+- fetch/브랜치 갱신/Scan에 오류가 있는 저장소는 자동 정리하지 않고 다음 저장소를 처리한다. 결과는 tray/메인 창과 기존 정리 이력에 남긴다. 자동 실행은 창을 만들지 않는다.
+- dependency나 상주 thread를 추가하지 않고 Slint 일회성 timer와 기존 worker를 사용한다.
+
 ## 16. 데이터 모델
 
 ### RepositoryConfig
@@ -1083,7 +1095,7 @@ Dependency 추가 PR에서는:
 
 ### Git Work
 
-- Scan은 사용자 요청 기반
+- Scan은 사용자 요청 또는 명시적으로 켠 주기 최신화·정리에서만 실행
 - Git command output은 필요한 만큼만 읽음
 - 전체 cleanup은 UI를 block하지 않음
 

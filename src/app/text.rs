@@ -66,6 +66,11 @@ pub fn cleanup_summary(totals: &ResultTotals, cancelled: bool) -> String {
 #[must_use]
 pub fn repository_status(outcome: &SummaryOutcome) -> String {
     match outcome {
+        SummaryOutcome::Updated {
+            updated,
+            skipped,
+            errors,
+        } => format!("Updated {updated} / {skipped} skipped / {errors} errors"),
         SummaryOutcome::NotScanned => String::from("Not scanned"),
         SummaryOutcome::Scanned {
             removable: 0,

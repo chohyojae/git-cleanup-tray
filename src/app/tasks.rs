@@ -52,7 +52,7 @@ pub(super) fn data_dir() -> Result<PathBuf> {
 }
 
 /// 설정에 맞는 git runner를 만든다.
-fn runner_for(git_executable: Option<&Path>) -> ProcessGitRunner {
+pub(super) fn runner_for(git_executable: Option<&Path>) -> ProcessGitRunner {
     git_executable.map_or_else(ProcessGitRunner::new, ProcessGitRunner::with_executable)
 }
 
@@ -259,7 +259,10 @@ pub fn scan(
 }
 
 /// 저장소 설정과 앱 설정으로 Scan 요청을 만든다.
-fn scan_request<'a>(repo: &'a RepositoryConfig, settings: &'a AppSettings) -> ScanRequest<'a> {
+pub(super) fn scan_request<'a>(
+    repo: &'a RepositoryConfig,
+    settings: &'a AppSettings,
+) -> ScanRequest<'a> {
     ScanRequest {
         repository_id: repo.id,
         path: &repo.path,
@@ -396,6 +399,16 @@ pub fn clean(
     cancel: &CancellationToken,
     progress: ProgressSink<'_>,
 ) -> CleanReport {
+    clean_in(data_dir().as_deref().ok(), pending, cancel, progress)
+}
+
+/// 지정한 저장 폴더에 실행 결과를 남긴다. test는 실제 앱 설정을 건드리지 않는다.
+pub(super) fn clean_in(
+    dir: Option<&Path>,
+    pending: &PendingCleanup,
+    cancel: &CancellationToken,
+    progress: ProgressSink<'_>,
+) -> CleanReport {
     let name_of = |id: Option<RepositoryId>| {
         pending
             .names
@@ -442,7 +455,9 @@ pub fn clean(
             errors: totals.errors,
         });
     }
-    if let Err(error) = data_dir().and_then(|dir| history_store::append(&dir, &history)) {
+    if let Some(dir) = dir
+        && let Err(error) = history_store::append(dir, &history)
+    {
         log::error!("failed to save cleanup history: {error}");
     }
     let planned = pending

@@ -17,6 +17,8 @@ export component AppTray inherits SystemTrayIcon {
     callback icon-clicked();
     callback scan-all-requested();
     callback clean-all-requested();
+    // 등록된 remote를 fetch하고 로컬 브랜치를 fast-forward한다.
+    callback update-all-requested();
     callback settings-requested();
     callback about-requested();
     callback quit-requested();
@@ -44,6 +46,11 @@ export component AppTray inherits SystemTrayIcon {
             title: "Clean All";
             enabled: !root.busy;
             activated => { root.clean-all-requested(); }
+        }
+        MenuItem {
+            title: "Fetch & Update All";
+            enabled: !root.busy;
+            activated => { root.update-all-requested(); }
         }
         MenuSeparator {}
         MenuItem {

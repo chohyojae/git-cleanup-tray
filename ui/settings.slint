@@ -25,6 +25,10 @@ export component SettingsWindow inherits Window {
     in-out property <string> protected-patterns;
     // Clean All 전에 확인 dialog 표시.
     in-out property <bool> confirm-clean-all;
+    // 간격마다 최신화 후 정리하도록 사용자가 미리 동의한다.
+    in-out property <bool> auto-maintenance;
+    // 분 단위 간격. Rust에서 1~10080 범위를 검증한다.
+    in-out property <string> interval-minutes;
     // 설정 파일 폴더 (표시용).
     in property <string> data-dir;
     // 입력 검증·저장 오류. 비어 있으면 숨긴다.
@@ -38,7 +42,7 @@ export component SettingsWindow inherits Window {
     callback open-data-dir();
 
     title: "Settings";
-    preferred-width: 480px;
+    preferred-width: 540px;
 
     VerticalBox {
         GroupBox {
@@ -75,6 +79,25 @@ export component SettingsWindow inherits Window {
                 Text { text: "Protected branch patterns (one per line, * matches anything)"; wrap: word-wrap; }
                 TextEdit { text <=> root.protected-patterns; min-height: 60px; }
                 CheckBox { text: "Confirm before Clean All"; checked <=> root.confirm-clean-all; }
+            }
+        }
+        GroupBox {
+            title: "Scheduled update and cleanup";
+            VerticalLayout {
+                CheckBox {
+                    text: "Automatically fetch, update and clean enabled repositories";
+                    checked <=> root.auto-maintenance;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Interval (minutes, 1–10080)"; vertical-alignment: center; }
+                    LineEdit { text <=> root.interval-minutes; enabled: root.auto-maintenance; }
+                }
+                Text {
+                    text: "Runs without confirmation while the app is open. The timer pauses during other operations and resumes with the remaining time.";
+                    wrap: word-wrap;
+                    font-size: 11px;
+                }
             }
         }
         HorizontalBox {

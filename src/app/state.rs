@@ -17,6 +17,8 @@ pub enum TrayStatus {
     Scanning,
     /// 정리 실행 중.
     CleaningUp,
+    /// fetch 및 로컬 브랜치 최신화 중.
+    Updating,
     /// 사용자가 확인해야 할 skipped/warning 항목이 있다.
     AttentionRequired,
     /// 마지막 작업이 오류로 끝났다.
@@ -30,6 +32,7 @@ impl TrayStatus {
         match self {
             Self::Idle => "Idle",
             Self::Scanning => "Scanning",
+            Self::Updating => "Updating",
             Self::CleaningUp => "Cleanup in progress",
             Self::AttentionRequired => "Attention required",
             Self::Error => "Error",
@@ -39,7 +42,7 @@ impl TrayStatus {
     /// 작업 실행 중이면 `true`.
     #[must_use]
     pub fn is_busy(self) -> bool {
-        matches!(self, Self::Scanning | Self::CleaningUp)
+        matches!(self, Self::Scanning | Self::CleaningUp | Self::Updating)
     }
 }
 
@@ -80,6 +83,15 @@ pub enum SummaryOutcome {
     },
     /// 저장소 전체를 검사하지 못했다. 사용자에게 보여줄 오류 문구를 담는다.
     Failed(String),
+    /// fetch와 로컬 브랜치 최신화 결과.
+    Updated {
+        /// fast-forward한 브랜치 수.
+        updated: usize,
+        /// 안전 조건 때문에 건너뛴 브랜치 수.
+        skipped: usize,
+        /// 브랜치별 오류 수.
+        errors: usize,
+    },
     /// cleanup 결과. 다시 Scan하기 전까지의 상태다.
     Cleaned {
         /// 삭제한 항목 수.
