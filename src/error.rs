@@ -14,6 +14,16 @@ pub enum CleanupError {
     #[error("git executable was not found")]
     GitNotFound,
 
+    /// 라이브러리로 저장소를 읽지 못했다. 종료 코드나 Git stderr로 위장하지 않는다.
+    #[error("repository read failed during {operation}")]
+    RepositoryReadFailed {
+        /// 실패한 조회 작업. 로그에 설정 값이나 원격 URL을 포함하지 않는다.
+        operation: &'static str,
+        /// 상세 원인. 일반 로그에는 출력하지 않고 오류 연결 관계를 유지한다.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
     /// 경로가 Git 저장소가 아니다.
     #[error("not a git repository: {}", .0.display())]
     NotARepository(PathBuf),

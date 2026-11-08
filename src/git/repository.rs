@@ -3,8 +3,7 @@
 //! 저장소 식별 (PLAN 6장).
 //!
 //! 같은 저장소의 서로 다른 worktree 경로를 중복 등록하지 않도록 common Git directory를
-//! 식별 기준으로 쓴다. `git rev-parse --show-toplevel --git-dir --git-common-dir`를 한 번에
-//! 실행해 [`RepositoryIdentity`]를 채운다.
+//! 식별 기준으로 쓴다. 선택한 조회 방식으로 [`RepositoryIdentity`]를 채운다.
 
 use std::path::{Path, PathBuf};
 
@@ -12,7 +11,7 @@ use crate::error::{CleanupError, Result};
 use crate::git::runner::GitRunner;
 use crate::platform;
 
-/// `git rev-parse`로 확인한 저장소 경로 정보.
+/// 읽기 전용 조회로 확인한 저장소 경로 정보.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositoryIdentity {
     /// 작업 tree 최상위 경로 (`--show-toplevel`).
@@ -41,7 +40,10 @@ pub struct RepositoryId(pub u64);
 /// - 경로가 없거나 directory가 아니면 [`CleanupError::RepositoryNotAccessible`]
 /// - Git 저장소가 아니거나 bare 저장소면 [`CleanupError::NotARepository`]
 /// - 그 밖의 Git 실패는 [`CleanupError::GitCommandFailed`]
-pub fn identify<R: GitRunner + ?Sized>(runner: &R, path: &Path) -> Result<RepositoryIdentity> {
+pub(crate) fn identify_process<R: GitRunner + ?Sized>(
+    runner: &R,
+    path: &Path,
+) -> Result<RepositoryIdentity> {
     // `-C`가 실패하면 Git 오류 문구로만 구분해야 하므로, 흔한 경우는 미리 확인한다.
     if !path.is_dir() {
         return Err(CleanupError::RepositoryNotAccessible(path.to_path_buf()));
@@ -87,4 +89,15 @@ pub fn identify<R: GitRunner + ?Sized>(runner: &R, path: &Path) -> Result<Reposi
             stderr: output.stdout_lossy().into_owned(),
         }),
     }
+}
+
+/// 작업 트리와 공통 Git 디렉터리를 식별한다. bare 저장소는 거부한다.
+///
+/// # Errors
+/// 저장소 접근과 해당 조회 작업의 오류를 반환한다.
+pub fn identify<R: GitRunner + ?Sized>(
+    runner: &R,
+    repository: &Path,
+) -> Result<RepositoryIdentity> {
+    runner.open_read(repository)?.identity()
 }

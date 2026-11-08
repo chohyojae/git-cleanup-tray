@@ -9,7 +9,6 @@ mod common;
 use common::Sandbox;
 use git_cleanup_tray::error::CleanupError;
 use git_cleanup_tray::git::default_branch::{self, BaseBranchQuery, BaseBranchSource, BaseRef};
-use git_cleanup_tray::git::runner::ProcessGitRunner;
 
 /// 기본 질의 (remote `origin`, override 없음, remote 질의 허용).
 const DEFAULT_QUERY: BaseBranchQuery<'static> = BaseBranchQuery {
@@ -22,7 +21,7 @@ const DEFAULT_QUERY: BaseBranchQuery<'static> = BaseBranchQuery {
 #[test]
 fn detects_any_default_branch_name() {
     let sandbox = Sandbox::new();
-    let runner = ProcessGitRunner::new();
+    let runner = common::test_runner();
     for (index, branch) in ["main", "master", "trunk", "개발-라인"]
         .into_iter()
         .enumerate()
@@ -42,7 +41,7 @@ fn detects_any_default_branch_name() {
 #[test]
 fn falls_back_to_remote_query_only_when_allowed() {
     let sandbox = Sandbox::new();
-    let runner = ProcessGitRunner::new();
+    let runner = common::test_runner();
     let work = sandbox.clone_with_default("trunk", "repo");
     sandbox.git(&work, &["remote", "set-head", "origin", "--delete"]);
 
@@ -64,7 +63,7 @@ fn falls_back_to_remote_query_only_when_allowed() {
 #[test]
 fn uses_remote_tracking_ref_without_local_branch() {
     let sandbox = Sandbox::new();
-    let runner = ProcessGitRunner::new();
+    let runner = common::test_runner();
     let work = sandbox.clone_with_default("main", "repo");
     sandbox.git(&work, &["checkout", "-q", "--detach"]);
     sandbox.git(&work, &["branch", "-D", "main"]);
@@ -80,7 +79,7 @@ fn uses_remote_tracking_ref_without_local_branch() {
 #[test]
 fn override_takes_precedence() {
     let sandbox = Sandbox::new();
-    let runner = ProcessGitRunner::new();
+    let runner = common::test_runner();
     let work = sandbox.clone_with_default("main", "repo");
     sandbox.git(&work, &["branch", "develop"]);
 
@@ -106,7 +105,7 @@ fn override_takes_precedence() {
 #[test]
 fn reports_unknown_remote() {
     let sandbox = Sandbox::new();
-    let runner = ProcessGitRunner::new();
+    let runner = common::test_runner();
     let work = sandbox.clone_with_default("main", "repo");
     let query = BaseBranchQuery {
         remote: "upstream",

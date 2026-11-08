@@ -49,7 +49,27 @@ pub fn scan_all<R: GitRunner + ?Sized>(
     cancel: &CancellationToken,
     on_progress: &mut dyn FnMut(Progress),
 ) -> Vec<RepositoryScan> {
-    if requests.len() <= 1 {
+    scan_all_with_parallelism(
+        runner,
+        requests,
+        cancel,
+        super::queue::scan_parallelism(),
+        on_progress,
+    )
+}
+
+/// 지정한 동시 저장소 수로 같은 검사 경로를 실행해 성능 비교와 재현에 사용한다.
+///
+/// `parallelism`이 0이면 1로 처리한다. 완료 결과와 취소 처리는 [`scan_all`]과 같다.
+pub fn scan_all_with_parallelism<R: GitRunner + ?Sized>(
+    runner: &R,
+    requests: &[ScanRequest<'_>],
+    cancel: &CancellationToken,
+    parallelism: usize,
+    on_progress: &mut dyn FnMut(Progress),
+) -> Vec<RepositoryScan> {
+    let limit = parallelism.max(1);
+    if requests.len() <= 1 || limit == 1 {
         return requests
             .iter()
             .enumerate()
@@ -68,7 +88,6 @@ pub fn scan_all<R: GitRunner + ?Sized>(
         .take(requests.len())
         .collect();
     let (sender, receiver) = mpsc::channel();
-    let limit = super::queue::scan_parallelism();
     thread::scope(|scope| {
         let mut next = 0;
         let mut running = 0;

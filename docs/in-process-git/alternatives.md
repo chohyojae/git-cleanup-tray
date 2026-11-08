@@ -2,7 +2,7 @@
 
 # 라이브러리와 적용 범위 비교
 
-2026-11-08에 crates.io API와 배포 소스를 확인했습니다. 아래 버전은 조사 당시 최신 안정 버전이며, 의존성을 추가할 때 다시 확인합니다. 현재 `Cargo.toml`·`Cargo.lock`은 변경하지 않았습니다.
+2026-11-09에 crates.io API와 배포 소스를 다시 확인하고 A안의 `gix 0.90.0`을 추가했습니다. 아래 버전은 확인 당시 최신 안정 버전입니다. [구현·macOS 측정 결과](macos-results-2026-11-09.md)를 반영했으며 Windows·git2 실측은 후속 작업입니다.
 
 세 안 모두 저장소마다 작업 스레드를 배정합니다. 동시 실행 수, 대상 저장소, 안전 검사, 취소 방식은 현재의 동시 Git 명령 실행과 동일하게 맞춥니다.
 
@@ -20,20 +20,20 @@
 
 근거는 [gix API](https://crates.io/api/v1/crates/gix), [git2 API](https://crates.io/api/v1/crates/git2)입니다. `git2` 패키지의 최종 갱신일은 2026-10-06이지만, 위 배포일은 해당 버전의 `created_at` 값입니다. 두 버전 모두 조사일로부터 6개월 안에 배포됐습니다. 다운로드 수는 사용자 수나 성능을 뜻하지 않으며, 이슈·PR 대응과 RUSTSEC 권고는 도입할 때 다시 확인합니다.
 
-## A안: 조회는 `gix`, 삭제와 최신화는 Git 명령 — 우선 추천
+## A안: 조회는 `gix`, 삭제와 최신화는 Git 명령 — 구현
 
-`gix::Repository`로 저장소 경로, ref가 가리키는 대상과 종류, 브랜치·커밋 관계를 읽습니다. 워크트리 목록과 파일 변경 여부도 기존 결과와 비교한 뒤 옮깁니다. 삭제·fetch·fast-forward·원격 HEAD 질의는 `ProcessGitRunner`로 Git 명령을 실행합니다.
+`gix::Repository`로 저장소 경로, ref가 가리키는 대상과 종류, 브랜치·커밋 관계를 읽습니다. 워크트리 목록과 파일 변경 여부, 정리·최신화 직전 재검사도 같은 조회 구현으로 처리합니다. 삭제·fetch·fast-forward·원격 HEAD 질의는 `ProcessGitRunner`로 Git 명령을 실행합니다.
 
-우선 실험할 의존성 설정입니다. `revision`은 커밋 관계 조회용이고 `sha1`은 SHA-1 저장소용입니다.
+현재 의존성 설정입니다. `revision`은 커밋 관계, `status`는 파일 검사, `sha1`·`sha256`은 object 형식, `pack-cache-lru-static`은 압축 데이터 캐시에 사용합니다.
 
 ```toml
 # SPDX-License-Identifier: GPL-3.0-only
-gix = { version = "0.90.0", default-features = false, features = ["revision", "sha1"] }
+gix = { version = "0.90.0", default-features = false, features = ["revision", "status", "sha1", "sha256", "pack-cache-lru-static"] }
 ```
 
-파일 변경 검사 실험에는 `status`를 추가합니다. SHA-256 저장소는 `sha256`도 검증한 뒤 지원하며, 그전에는 Git 명령으로 처리합니다. `max-performance`, `parallel`, 네트워크, `worktree-mutation`은 처음부터 켜지 않습니다. 저장소별 스레드는 앱이 관리하고, 라이브러리 내부 병렬화는 별도로 측정해 스레드가 과도하게 늘지 않게 합니다. [0.90.0 기능 설정](https://docs.rs/crate/gix/0.90.0/source/Cargo.toml.orig)
+SHA-256·packed refs를 실제 저장소에서 대조했습니다. `max-performance`, `parallel`, 네트워크, `worktree-mutation`은 처음부터 켜지 않습니다. 저장소별 스레드는 앱이 관리하고, 라이브러리 내부 병렬화는 별도로 측정해 스레드가 과도하게 늘지 않게 합니다. [0.90.0 기능 설정](https://docs.rs/crate/gix/0.90.0/source/Cargo.toml.orig)
 
-`merge_base_with_graph()`는 반복 조회에서 커밋 그래프를 재사용할 수 있습니다. 제한된 캐시를 저장소 하나를 처리하는 동안만 유지하고, ref가 많으면 기준 커밋에서 한 번 이력을 걷는 방식과 비교합니다. 앱의 짧은 작업 수명에 맞는 구성이라는 판단이며, 더 빠르다는 결론은 실측 후 내립니다. [병합 관계 API](https://docs.rs/gix/0.90.0/gix/struct.Repository.html#method.merge_base_with_graph), [캐시 설명](https://docs.rs/gix/0.90.0/gix/#object-access-performance)
+`merge_base_with_graph()`는 반복 조회에서 커밋 그래프를 재사용할 수 있습니다. 제한된 캐시를 저장소 하나를 처리하는 동안만 유지하고, ref가 많으면 기준 커밋에서 한 번 이력을 걷는 방식과 비교합니다. 이번 macOS 구성에서는 같은 동시 실행 수의 Git 명령보다 빨랐습니다. 저장소별 결과와 메모리 비용은 측정 보고서에서 확인합니다. [병합 관계 API](https://docs.rs/gix/0.90.0/gix/struct.Repository.html#method.merge_base_with_graph), [캐시 설명](https://docs.rs/gix/0.90.0/gix/#object-access-performance)
 
 그대로 치환하면 안 되는 부분도 있습니다.
 
@@ -42,7 +42,7 @@ gix = { version = "0.90.0", default-features = false, features = ["revision", "s
 - 저장소 객체는 설정·인덱스·ref를 캐시할 수 있습니다. 정리 확인을 기다리는 동안 보관하거나 삭제 직전 재검사에 이전 값을 그대로 쓰지 않습니다.
 - `status` 기능에는 Git 속성·필터 처리가 포함됩니다. 외부 필터 프로그램을 실행할 수 있는 경로도 확인합니다. 라이브러리를 쓴다고 보조 프로세스까지 모두 없어지는 것은 아닙니다.
 
-장점은 Rust 중심으로 의존성과 캐시를 관리할 수 있다는 점입니다. 고려할 비용은 0.x 버전의 API 변경, Git 설정·저장 형식별 검증, 파일 검사 기능의 추가 의존성입니다. 최종 실행 파일 크기와 전체 의존성 수는 아직 측정하지 않았습니다.
+장점은 Rust 중심으로 의존성과 캐시를 관리할 수 있다는 점입니다. 고려할 비용은 0.x 버전의 API 변경, Git 설정·저장 형식별 검증, 파일 검사 기능의 추가 의존성입니다. 실행 파일 크기·의존성 증가와 메모리 측정은 보고서에 기록했습니다. 파일이 많은 구성의 gix 작업 후 footprint가 57~68MiB여서 macOS 파일 상태 검사의 할당 패턴 개선 또는 해당 조회만 Git 명령으로 유지하는 추가 비교가 필요합니다. 시간 개선만으로 상주 메모리 기준까지 충족했다고 보지 않습니다. gix 자체의 신규 권고·라이선스 오류는 없지만 기존 Slint 빌드 의존성의 유지보수 중단 권고로 `cargo deny check` 전체는 실패했습니다.
 
 ## B안: 같은 조회 작업에 `git2` 사용 — 비교 후보
 

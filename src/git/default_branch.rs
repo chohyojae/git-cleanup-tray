@@ -12,7 +12,8 @@ use std::path::Path;
 
 use crate::error::{CleanupError, Result};
 use crate::git::object::ObjectId;
-use crate::git::refs::{self, LOCAL_BRANCH_PREFIX, REMOTE_TRACKING_PREFIX};
+use crate::git::read::GitReadRepository;
+use crate::git::refs::{LOCAL_BRANCH_PREFIX, REMOTE_TRACKING_PREFIX};
 use crate::git::runner::GitRunner;
 
 /// base branch를 어떤 방법으로 결정했는지. 로그와 상세 화면에 표시한다.
@@ -86,9 +87,20 @@ pub fn resolve<R: GitRunner + ?Sized>(
     repository: &Path,
     query: BaseBranchQuery<'_>,
 ) -> Result<ResolvedBase> {
+    let mut reader = runner.open_read(repository)?;
+    resolve_with_reader(runner, repository, query, reader.as_mut())
+}
+
+/// 같은 Scan의 읽기 상태를 재사용하며 네트워크 질의는 기존 runner에 맡긴다.
+pub(crate) fn resolve_with_reader<R: GitRunner + ?Sized>(
+    runner: &R,
+    repository: &Path,
+    query: BaseBranchQuery<'_>,
+    reader: &mut dyn GitReadRepository,
+) -> Result<ResolvedBase> {
     let (branch, source) = if let Some(name) = query.override_branch {
         (name.to_owned(), BaseBranchSource::Override)
-    } else if let Some(name) = read_local_symbolic_ref(runner, repository, query.remote)? {
+    } else if let Some(name) = read_local_symbolic_ref(reader, query.remote)? {
         (name, BaseBranchSource::LocalSymbolicRef)
     } else if query.allow_remote_query {
         (
@@ -99,7 +111,7 @@ pub fn resolve<R: GitRunner + ?Sized>(
         return Err(CleanupError::DefaultBranchUnknown(query.remote.to_owned()));
     };
 
-    let (base_ref, commit) = find_base_ref(runner, repository, query.remote, &branch)?
+    let (base_ref, commit) = find_base_ref(reader, query.remote, &branch)?
         .ok_or_else(|| CleanupError::DefaultBranchUnknown(query.remote.to_owned()))?;
     Ok(ResolvedBase {
         remote: query.remote.to_owned(),
@@ -125,43 +137,28 @@ pub fn revalidate<R: GitRunner + ?Sized>(
     repository: &Path,
     base: &ResolvedBase,
 ) -> Result<bool> {
+    let mut reader = runner.open_read(repository)?;
     if base.source == BaseBranchSource::LocalSymbolicRef
-        && read_local_symbolic_ref(runner, repository, &base.remote)?.as_deref()
+        && read_local_symbolic_ref(reader.as_mut(), &base.remote)?.as_deref()
             != Some(base.branch.as_str())
     {
         return Ok(false);
     }
-    Ok(
-        refs::resolve_commit(runner, repository, base.base_ref.full_ref())?.as_ref()
-            == Some(&base.commit),
-    )
+    Ok(reader.resolve_commit(base.base_ref.full_ref())?.as_ref() == Some(&base.commit))
 }
 
 /// `refs/remotes/<remote>/HEAD`가 가리키는 branch 이름을 읽는다. 없으면 `None`.
 ///
 /// `--short`를 쓰지 않는다. short 이름은 같은 이름의 다른 ref가 있으면 모호하게 줄어들 수 있어,
 /// full ref를 받아 prefix를 직접 떼는 편이 정확하다.
-fn read_local_symbolic_ref<R: GitRunner + ?Sized>(
-    runner: &R,
-    repository: &Path,
+fn read_local_symbolic_ref(
+    reader: &mut dyn GitReadRepository,
     remote: &str,
 ) -> Result<Option<String>> {
     let head_ref = format!("{REMOTE_TRACKING_PREFIX}{remote}/HEAD");
-    let output = runner.run(
-        repository,
-        &[
-            "symbolic-ref".as_ref(),
-            "--quiet".as_ref(),
-            head_ref.as_ref(),
-        ],
-    )?;
-    match output.exit_code {
-        Some(0) => {}
-        // `--quiet`에서 exit 1은 "symbolic ref가 아니거나 없음"이다. 오류가 아니라 다음 단계로 간다.
-        Some(1) => return Ok(None),
-        _ => return Err(output.failure("symbolic-ref")),
-    }
-    let target = output.stdout_lossy();
+    let Some(target) = reader.symbolic_ref(&head_ref)? else {
+        return Ok(None);
+    };
     let prefix = format!("{REMOTE_TRACKING_PREFIX}{remote}/");
     // 다른 remote나 namespace를 가리키도록 손으로 바꾼 경우는 신뢰하지 않고 다음 단계로 넘긴다.
     Ok(target
@@ -260,15 +257,14 @@ fn classify_remote_failure(stderr: &str) -> Option<CleanupError> {
 ///
 /// 두 후보를 `for-each-ref` 한 번으로 조회한다. pattern은 `/` 경계 prefix로도 일치하므로
 /// (`refs/heads/main`이 `refs/heads/main/x`도 잡는다) 이름이 정확히 같은 것만 고른다.
-fn find_base_ref<R: GitRunner + ?Sized>(
-    runner: &R,
-    repository: &Path,
+fn find_base_ref(
+    reader: &mut dyn GitReadRepository,
     remote: &str,
     branch: &str,
 ) -> Result<Option<(BaseRef, ObjectId)>> {
     let local = format!("{LOCAL_BRANCH_PREFIX}{branch}");
     let tracking = format!("{REMOTE_TRACKING_PREFIX}{remote}/{branch}");
-    let found = refs::list_refs(runner, repository, &[&local, &tracking], None)?;
+    let found = reader.list_refs(&[&local, &tracking], None)?;
 
     let pick = |name: &str| {
         found

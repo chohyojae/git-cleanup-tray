@@ -17,6 +17,7 @@ use crate::cleanup::candidate::{SkipReason, SkippedItem};
 use crate::cleanup::planner::ScanRequest;
 use crate::error::{CleanupError, Result};
 use crate::git::default_branch::BaseBranchQuery;
+use crate::git::in_process::InProcessGitRunner;
 use crate::git::repository::{self, RepositoryId};
 use crate::git::runner::ProcessGitRunner;
 use crate::jobs::batch::{self, PlanTotals, ResultTotals};
@@ -52,8 +53,11 @@ pub(super) fn data_dir() -> Result<PathBuf> {
 }
 
 /// 설정에 맞는 git runner를 만든다.
-pub(super) fn runner_for(git_executable: Option<&Path>) -> ProcessGitRunner {
-    git_executable.map_or_else(ProcessGitRunner::new, ProcessGitRunner::with_executable)
+pub(super) fn runner_for(git_executable: Option<&Path>) -> InProcessGitRunner {
+    git_executable.map_or_else(InProcessGitRunner::default, |path| {
+        // Custom Git은 설치별 system config·attribute가 다를 수 있어 조회도 그 실행 파일에 맡긴다.
+        InProcessGitRunner::commands_only(ProcessGitRunner::with_executable(path))
+    })
 }
 
 /// 앱 시작 시 읽는 상태.

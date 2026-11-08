@@ -1,0 +1,5 @@
+case,backend,parallelism,iterations,physical_footprint,physical_footprint_peak
+worktrees,commands,4,30,4048K,4176K
+worktrees,gix,4,30,5456K,5968K
+files,commands,4,30,3712K,3824K
+files,gix,4,30,67.8M,68.3M

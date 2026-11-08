@@ -4,9 +4,9 @@
 
 Git 명령을 동시에 실행하는 방식과 멀티스레드 라이브러리 처리를 비교합니다. Windows 실측은 아직 하지 않았습니다. 이번 구현과 자동 테스트는 macOS에서 진행했습니다.
 
-## 이번 구현의 macOS 참고 측정
+## 2026-11-08 동시 Git 실행 측정 (이전 결과)
 
-`cargo run --release --example scan_benchmark`로 다시 실행할 수 있습니다. [측정 코드](../../examples/scan_benchmark.rs)는 사용자 저장소를 사용하지 않고, 커밋 1개인 임시 저장소 16개를 만듭니다. 저장소마다 로컬 원격 HEAD가 있는 상태에서 같은 검사를 순차 또는 4개씩 동시에 실행했습니다.
+아래 값은 이전 커밋 `2d21476`의 측정입니다. 현재 [측정 코드](../../examples/scan_benchmark.rs)는 gix와 같은 동시 실행 수로 비교하도록 확장했습니다. 최신 명령·원본 CSV·메모리는 [2026-11-09 macOS 보고서](macos-results-2026-11-09.md)를 참고합니다. 이전 측정은 사용자 저장소를 사용하지 않고 커밋 1개인 임시 저장소 16개를 만들었습니다. 저장소마다 로컬 원격 HEAD가 있는 상태에서 같은 검사를 순차 또는 4개씩 동시에 실행했습니다.
 
 macOS 27.2 Apple Silicon, Apple Git 2.54.0, release 빌드에서 준비 실행 5회 후 각각 30회를 번갈아 측정한 결과입니다. 이미 파일 캐시가 사용되는 반복 실행이며 저장소 생성 시간은 제외했습니다.
 
@@ -15,7 +15,7 @@ macOS 27.2 Apple Silicon, Apple Git 2.54.0, release 빌드에서 준비 실행 5
 | 순차 Git 실행 | 971.83ms | 1021.58ms |
 | Git 명령 4개 저장소 동시 실행 | 273.30ms | 288.98ms |
 
-이 측정은 작은 저장소의 검사 시간만 확인한 것입니다. Windows 속도, 대형 저장소의 디스크 경합, 메모리, 라이브러리의 성능을 뜻하지 않습니다. 아래 Windows 비교와 메모리 측정은 별도로 진행합니다.
+이 측정은 작은 저장소의 검사 시간만 확인한 것입니다. Windows 속도, 대형 저장소의 디스크 경합, 메모리, 라이브러리의 성능을 뜻하지 않습니다. macOS 라이브러리 비교는 새 보고서에 있고, 아래 Windows 검증은 아직 진행하지 않았습니다.
 
 ## 실행 조건을 맞춥니다
 
@@ -31,6 +31,28 @@ macOS 27.2 Apple Silicon, Apple Git 2.54.0, release 빌드에서 준비 실행 5
 `Scan All` 전체 완료 시간뿐 아니라 개별 Scan이 실행 중일 때 다른 저장소를 요청한 경우도 측정합니다. 요청 접수·실제 시작·각 저장소 완료·전체 완료 시간을 기록하고, 동시 실행 상한 때문에 생긴 대기 시간을 구분합니다. 같은 저장소의 중복 요청이 추가 작업을 만들지 않는지도 확인합니다.
 
 Windows 11 x64와 ARM64에서 각각 실행합니다. ARM64는 해당 아키텍처용 앱·Git을 사용하고 x64 에뮬레이션은 별도 결과로 표시합니다. macOS Apple Silicon은 회귀 확인용으로 같은 시나리오를 실행합니다.
+
+## 현재 예제 실행
+
+현재 예제는 [macOS 보고서의 네 구성](macos-results-2026-11-09.md)을 동일하게 생성합니다. Windows PowerShell에서도 같은 방식으로 1·2·4개 동시 실행을 비교할 수 있습니다.
+
+```powershell
+cargo build --release --example scan_benchmark
+$benchmarkConfig = New-TemporaryFile
+$benchmarkPreviousGlobal = $env:GIT_CONFIG_GLOBAL
+$benchmarkPreviousNoSystem = $env:GIT_CONFIG_NOSYSTEM
+$env:GIT_CONFIG_GLOBAL = $benchmarkConfig.FullName
+$env:GIT_CONFIG_NOSYSTEM = "1"
+try {
+    .\target\release\examples\scan_benchmark.exe --case all --warmups 5 --iterations 30 --output "$env:TEMP\git-read-benchmark.csv"
+} finally {
+    $env:GIT_CONFIG_GLOBAL = $benchmarkPreviousGlobal
+    $env:GIT_CONFIG_NOSYSTEM = $benchmarkPreviousNoSystem
+    Remove-Item $benchmarkConfig.FullName
+}
+```
+
+`--parallelism 4`로 동시 실행 수를 고정할 수 있습니다. 아래 표는 이 예제보다 큰 저장소에서 추가 검증할 목표이며 현재 예제의 크기와 다릅니다.
 
 ## 테스트 저장소
 

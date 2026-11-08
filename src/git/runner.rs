@@ -62,6 +62,17 @@ impl GitOutput {
 /// 실제 구현([`ProcessGitRunner`])과 test용 recording/mock 구현을 바꿔 끼울 수 있게 trait로 둔다.
 /// 구현체는 실행 전에 반드시 [`guard::check_forbidden`]을 호출해야 한다.
 pub trait GitRunner: Send + Sync {
+    /// 작업 스레드에서 사용할 읽기 전용 저장소 상태를 연다. 기본 구현은 기존 Git 명령을 사용한다.
+    ///
+    /// # Errors
+    /// 라이브러리 구현에서는 저장소 접근·설정·형식 오류를 반환할 수 있다.
+    fn open_read<'a>(
+        &'a self,
+        repository: &'a Path,
+    ) -> Result<Box<dyn super::read::GitReadRepository + 'a>> {
+        Ok(Box::new(super::read::CommandRead::new(self, repository)))
+    }
+
     /// `repository` 경로에서 `git <args>`를 실행하고 결과를 그대로 돌려준다.
     ///
     /// exit code가 0이 아니어도 `Ok`를 반환한다. 성공 여부 판단은 호출자가 한다

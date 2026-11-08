@@ -46,7 +46,7 @@ impl Fixture {
 
     /// 실제 runner로 최신화를 실행한다.
     fn sync(&self) -> SyncResult {
-        sync::synchronize(&ProcessGitRunner::new(), &self.work, "origin", &|| false)
+        sync::synchronize(&common::test_runner(), &self.work, "origin", &|| false)
             .expect("synchronize")
     }
 }

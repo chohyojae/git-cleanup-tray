@@ -15,7 +15,6 @@ use git_cleanup_tray::cleanup::executor::CleanupExecutor;
 use git_cleanup_tray::cleanup::planner::CleanupPlanner;
 use git_cleanup_tray::error::CleanupError;
 use git_cleanup_tray::git::default_branch::{BaseBranchSource, BaseRef};
-use git_cleanup_tray::git::runner::ProcessGitRunner;
 
 /// symlink를 푼 경로. macOS 임시 경로(`/var` → `/private/var`) 차이를 없애고 비교한다.
 fn canon(path: &Path) -> PathBuf {
@@ -38,7 +37,7 @@ fn skipped(plan: &CleanupPlan, kind: TargetKind, reason: SkipReason) -> Vec<&str
 fn scan_and_execute_cleans_only_safe_targets() {
     let sandbox = Sandbox::new();
     let s = sandbox.scenario();
-    let runner = ProcessGitRunner::new();
+    let runner = common::test_runner();
     let namespaces = default_namespaces();
     let protected = vec![String::from("release/*")];
 
@@ -152,7 +151,7 @@ fn scan_and_execute_cleans_only_safe_targets() {
 fn registered_linked_worktree_is_never_removed() {
     let sandbox = Sandbox::new();
     let s = sandbox.scenario();
-    let runner = ProcessGitRunner::new();
+    let runner = common::test_runner();
     let namespaces = default_namespaces();
 
     let plan = CleanupPlanner::new(&runner)
@@ -175,7 +174,7 @@ fn branch_checked_out_in_main_worktree_is_skipped() {
     sandbox.commit(&work, "advance main");
     sandbox.git(&work, &["checkout", "-q", "merged-but-checked-out"]);
 
-    let runner = ProcessGitRunner::new();
+    let runner = common::test_runner();
     let plan = CleanupPlanner::new(&runner)
         .scan(&request(&work, &default_namespaces(), &[]))
         .expect("scan");
@@ -195,7 +194,7 @@ fn branch_checked_out_in_main_worktree_is_skipped() {
 fn invalid_custom_namespaces_are_ignored() {
     let sandbox = Sandbox::new();
     let s = sandbox.scenario();
-    let runner = ProcessGitRunner::new();
+    let runner = common::test_runner();
     let namespaces = vec![String::from("refs/remotes/"), String::from("refs/tags/")];
 
     let plan = CleanupPlanner::new(&runner)
@@ -213,7 +212,7 @@ fn invalid_custom_namespaces_are_ignored() {
 #[test]
 fn reports_repository_errors() {
     let sandbox = Sandbox::new();
-    let runner = ProcessGitRunner::new();
+    let runner = common::test_runner();
     let planner = CleanupPlanner::new(&runner);
     let namespaces = default_namespaces();
 

@@ -44,6 +44,14 @@ env_logger = { version = "0.11.11", default-features = false }
 dirs = "7.0.0"
 # 저장소 추가 시 OS native 폴더 선택 창. default feature(xdg-portal, wayland)는 Linux 전용이라 끈다.
 rfd = { version = "0.17.2", default-features = false }
+# 로컬 조회만 사용하고 저장소별 동시 실행 수는 앱이 관리한다.
+gix = { version = "0.90.0", default-features = false, features = [
+    "revision",
+    "status",
+    "sha1",
+    "sha256",
+    "pack-cache-lru-static",
+] }
 
 [target.'cfg(windows)'.dependencies]
 # login 자동 시작용 `HKCU\...\Run` registry 값 읽기/쓰기. 다른 feature는 쓰지 않는다.

@@ -12,12 +12,11 @@ use git_cleanup_tray::cleanup::candidate::{SkipReason, TargetKind};
 use git_cleanup_tray::cleanup::executor::CleanupExecutor;
 use git_cleanup_tray::cleanup::planner::CleanupPlanner;
 use git_cleanup_tray::cleanup::result::CleanupResult;
-use git_cleanup_tray::git::runner::ProcessGitRunner;
 
 /// scenario를 만들고 Scan한 plan을 돌려준다.
 fn scanned(sandbox: &Sandbox) -> (Scenario, CleanupPlan) {
     let scenario = sandbox.scenario();
-    let runner = ProcessGitRunner::new();
+    let runner = common::test_runner();
     let namespaces = default_namespaces();
     let plan = CleanupPlanner::new(&runner)
         .scan(&request(&scenario.work, &namespaces, &[]))
@@ -28,7 +27,7 @@ fn scanned(sandbox: &Sandbox) -> (Scenario, CleanupPlan) {
 
 /// plan을 실행한다.
 fn execute(plan: &CleanupPlan) -> CleanupResult {
-    CleanupExecutor::new(&ProcessGitRunner::new()).execute(plan)
+    CleanupExecutor::new(&common::test_runner()).execute(plan)
 }
 
 /// 결과에서 `kind` 항목이 `StateChanged`로 넘어갔으면 `true`.

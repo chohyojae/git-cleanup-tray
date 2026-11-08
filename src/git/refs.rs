@@ -89,7 +89,7 @@ pub struct RefEntry {
 /// # Errors
 ///
 /// Git 실행이 실패하면 [`crate::error::CleanupError::GitCommandFailed`].
-pub fn list_refs<R: GitRunner + ?Sized>(
+pub(crate) fn list_refs_process<R: GitRunner + ?Sized>(
     runner: &R,
     repository: &Path,
     patterns: &[&str],
@@ -144,7 +144,7 @@ fn parse_for_each_ref(stdout: &[u8]) -> Vec<RefEntry> {
 ///
 /// `--verify --quiet`는 ref가 없을 때 exit 1로 조용히 끝난다. 그 밖의 실패는
 /// [`crate::error::CleanupError::GitCommandFailed`].
-pub fn resolve_commit<R: GitRunner + ?Sized>(
+pub(crate) fn resolve_commit_process<R: GitRunner + ?Sized>(
     runner: &R,
     repository: &Path,
     full_ref: &str,
@@ -174,7 +174,7 @@ pub fn resolve_commit<R: GitRunner + ?Sized>(
 /// # Errors
 ///
 /// exit code 0(ancestor), 1(아님) 외에는 [`crate::error::CleanupError::GitCommandFailed`].
-pub fn is_ancestor<R: GitRunner + ?Sized>(
+pub(crate) fn is_ancestor_process<R: GitRunner + ?Sized>(
     runner: &R,
     repository: &Path,
     ancestor: &ObjectId,
@@ -194,6 +194,48 @@ pub fn is_ancestor<R: GitRunner + ?Sized>(
         Some(1) => Ok(false),
         _ => Err(output.failure("merge-base")),
     }
+}
+
+/// 선택한 이름·namespace의 ref와 object 종류를 읽고 필요하면 병합된 ref만 반환한다.
+///
+/// # Errors
+/// 저장소 접근과 해당 조회 작업의 오류를 반환한다.
+pub fn list_refs<R: GitRunner + ?Sized>(
+    runner: &R,
+    repository: &Path,
+    patterns: &[&str],
+    merged_into: Option<&ObjectId>,
+) -> Result<Vec<RefEntry>> {
+    runner
+        .open_read(repository)?
+        .list_refs(patterns, merged_into)
+}
+
+/// ref가 가리키는 커밋을 읽는다. 없거나 커밋이 아니면 `None`을 반환한다.
+///
+/// # Errors
+/// 저장소 접근과 해당 조회 작업의 오류를 반환한다.
+pub fn resolve_commit<R: GitRunner + ?Sized>(
+    runner: &R,
+    repository: &Path,
+    full_ref: &str,
+) -> Result<Option<ObjectId>> {
+    runner.open_read(repository)?.resolve_commit(full_ref)
+}
+
+/// 같은 커밋을 포함해 첫 커밋이 두 번째 커밋의 조상인지 확인한다.
+///
+/// # Errors
+/// 저장소 접근과 해당 조회 작업의 오류를 반환한다.
+pub fn is_ancestor<R: GitRunner + ?Sized>(
+    runner: &R,
+    repository: &Path,
+    ancestor: &ObjectId,
+    descendant: &ObjectId,
+) -> Result<bool> {
+    runner
+        .open_read(repository)?
+        .is_ancestor(ancestor, descendant)
 }
 
 #[cfg(test)]

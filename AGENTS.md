@@ -120,12 +120,14 @@ cargo build --release     # 성능·크기에 영향을 주는 변경일 때
 | 폴더 선택 창 | `rfd` 0.17.2 | Slint에 native 파일 선택 창이 없다. 2026-10 release, 최근 다운로드 약 1,700만. 경로 직접 입력 방식 대신 사용자가 선택 (2026-11-02). default feature는 Linux 전용이라 끈다 |
 | 자동 시작 (Windows만) | `winreg` 0.56.0 | `HKCU\...\Run` 값 하나만 쓴다. `auto-launch`(2026-01, 약 280만)보다 최근 release이고 사용자가 많다 (약 4,900만). macOS는 LaunchAgent plist를 직접 쓴다 |
 | test 임시 폴더 | `tempfile` 3.27.0 | 사실상 표준 |
+| 로컬 Git 조회 | `gix` 0.90.0 | 저장소·ref·병합 관계·워크트리·파일 상태를 인프로세스로 조회한다. 기본 기능과 내부 병렬화를 끄고 저장소별 동시 실행 수는 앱이 관리한다. object cache는 저장소당 1MiB로 제한하고 작업 후 버린다. 삭제·네트워크는 기존 Git 명령을 유지한다 (2026-11-09) |
 
 ## 6. 안전 불변조건 (설정으로 끌 수 없음)
 
 PLAN 8, 15, 24장의 요약. 이 규칙을 약화하는 변경은 하지 않는다.
 
 - Git 실행은 반드시 `git::runner::GitRunner`를 거친다. 다른 곳에서 `Command::new("git")`을 쓰지 않는다. UI에서 Git을 직접 실행하지 않는다.
+- 로컬 조회는 `GitRunner::open_read`가 제공하는 `git::read::GitReadRepository`만 사용한다. 기본은 `gix`이며 raw 저장소·ref store·쓰기 API를 `git/` 밖에 노출하지 않는다. Custom Git, `GIT_DIR` 지정, 미검증 필터·fsmonitor·sparse·partial clone·grafts·ref 저장 방식·비표준 upstream 설정은 Git 명령 조회로 처리한다. 권한·손상 오류를 fallback이나 변경 없음으로 숨기지 않는다.
 - shell command string을 만들지 않는다. executable과 argument를 분리해서 넘기고, branch 이름·path 앞에는 `--`를 둔다.
 - `git::guard`가 `branch -D/-f/--force`, `branch -r`, `worktree remove --force`, `push`, `reset`, `clean`, `stash`, `refs/remote/*` 밖이거나 `--no-deref` 없는 `update-ref -d`를 차단한다. Git은 long option 앞부분(`--forc`)도 받아들이므로 guard도 앞부분 일치로 판별한다. guard를 우회하거나 완화하지 않는다.
 - force 삭제, remote branch 삭제, 자동 stash, worktree 폴더 직접 삭제 기능을 만들지 않는다. `.git` 내부 파일을 직접 수정하지 않는다.

@@ -16,12 +16,11 @@ use git_cleanup_tray::cleanup::candidate::{
 };
 use git_cleanup_tray::cleanup::executor::CleanupExecutor;
 use git_cleanup_tray::cleanup::planner::CleanupPlanner;
-use git_cleanup_tray::git::runner::ProcessGitRunner;
 
 /// 기본 namespace, 보호 pattern으로 Scan한다.
 fn scan(repo: &Path, protected: &[String]) -> CleanupPlan {
     let namespaces = default_namespaces();
-    CleanupPlanner::new(&ProcessGitRunner::new())
+    CleanupPlanner::new(&common::test_runner())
         .scan(&request(repo, &namespaces, protected))
         .expect("scan")
 }
@@ -59,7 +58,7 @@ fn dirty_variants_are_never_removed() {
         3
     );
 
-    let result = CleanupExecutor::new(&ProcessGitRunner::new()).execute(&plan);
+    let result = CleanupExecutor::new(&common::test_runner()).execute(&plan);
     assert!(result.errors.is_empty(), "{:?}", result.errors);
     assert!(untracked.join("새 폴더/깊은 곳/memo.txt").exists());
     assert!(renamed.join("renamed.txt").exists());
@@ -81,7 +80,7 @@ fn worktree_locked_without_reason_is_kept() {
         count(&plan, TargetKind::Worktree, SkipReason::LockedWorktree),
         1
     );
-    let result = CleanupExecutor::new(&ProcessGitRunner::new()).execute(&plan);
+    let result = CleanupExecutor::new(&common::test_runner()).execute(&plan);
     assert!(
         result.removed_worktrees.is_empty(),
         "{:?}",
@@ -102,7 +101,7 @@ fn missing_worktree_path_is_pruned_then_cleaned_next_time() {
     let wt = sandbox.add_worktree(&work, "wt gone", "gone");
     std::fs::remove_dir_all(&wt).expect("user deletes worktree folder");
 
-    let runner = ProcessGitRunner::new();
+    let runner = common::test_runner();
     let plan = scan(&work, &[]);
     assert_eq!(
         count(&plan, TargetKind::Worktree, SkipReason::MissingWorktreePath),
@@ -134,7 +133,7 @@ fn detached_worktree_is_untouched() {
 
     let plan = scan(&work, &[]);
     assert!(plan.worktrees.is_empty(), "{:?}", plan.worktrees);
-    let result = CleanupExecutor::new(&ProcessGitRunner::new()).execute(&plan);
+    let result = CleanupExecutor::new(&common::test_runner()).execute(&plan);
     assert!(result.errors.is_empty(), "{:?}", result.errors);
     assert!(wt.exists());
 }
@@ -154,7 +153,7 @@ fn protected_branch_keeps_its_worktree() {
     assert_eq!(plan.removable_count(), 0, "{plan:?}");
     assert_eq!(count(&plan, TargetKind::Branch, SkipReason::Protected), 2);
 
-    let result = CleanupExecutor::new(&ProcessGitRunner::new()).execute(&plan);
+    let result = CleanupExecutor::new(&common::test_runner()).execute(&plan);
     assert!(result.errors.is_empty(), "{:?}", result.errors);
     assert!(wt.exists());
     assert!(sandbox.ref_exists(&work, "refs/heads/keep/한글"));
@@ -186,7 +185,7 @@ fn reserved_namespaces_survive_any_namespace_setting() {
     .into_iter()
     .map(String::from)
     .collect();
-    let runner = ProcessGitRunner::new();
+    let runner = common::test_runner();
     let plan = CleanupPlanner::new(&runner)
         .scan(&request(&work, &namespaces, &[]))
         .expect("scan");
@@ -245,7 +244,7 @@ fn symbolic_refs_are_skipped_and_targets_kept() {
     );
     assert_eq!(count(&plan, TargetKind::Branch, SkipReason::SymbolicRef), 1);
 
-    let result = CleanupExecutor::new(&ProcessGitRunner::new()).execute(&plan);
+    let result = CleanupExecutor::new(&common::test_runner()).execute(&plan);
     assert!(result.errors.is_empty(), "{:?}", result.errors);
     assert!(sandbox.ref_exists(&work, "refs/heads/main"));
     // `merged` 자체는 일반 branch로 정리되지만, symbolic ref 때문에 다른 ref가 지워지지는 않는다.
@@ -271,7 +270,7 @@ fn executor_never_follows_symbolic_custom_ref() {
         full_ref: String::from("refs/remote/agent/to-main"),
         commit: sandbox.oid(&work, "main"),
     });
-    let result = CleanupExecutor::new(&ProcessGitRunner::new()).execute(&plan);
+    let result = CleanupExecutor::new(&common::test_runner()).execute(&plan);
     assert!(result.errors.is_empty(), "{:?}", result.errors);
     assert!(
         sandbox.ref_exists(&work, "refs/heads/main"),
@@ -311,7 +310,7 @@ fn executor_rejects_forged_candidates() {
         });
     }
 
-    let result = CleanupExecutor::new(&ProcessGitRunner::new()).execute(&plan);
+    let result = CleanupExecutor::new(&common::test_runner()).execute(&plan);
     assert!(
         result.removed_branches.is_empty(),
         "{:?}",
@@ -368,7 +367,7 @@ fn special_character_names_are_not_interpreted() {
     let plan = scan(&work, &[]);
     assert_eq!(plan.branches.len(), names.len(), "{:?}", plan.branches);
     assert_eq!(plan.worktrees.len(), 1);
-    let result = CleanupExecutor::new(&ProcessGitRunner::new()).execute(&plan);
+    let result = CleanupExecutor::new(&common::test_runner()).execute(&plan);
     assert!(result.errors.is_empty(), "{:?}", result.errors);
     assert_eq!(result.removed_branches.len(), names.len() + 1);
     assert!(!wt.exists());

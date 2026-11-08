@@ -9,6 +9,7 @@ use std::path::Path;
 
 use crate::error::{CleanupError, Result};
 use crate::git::object::ObjectId;
+use crate::git::read::TrackedBranch as Branch;
 use crate::git::runner::{GitOutput, GitRunner};
 use crate::git::{refs, repository, worktree};
 
@@ -21,18 +22,6 @@ pub struct SyncResult {
     pub skipped: Vec<String>,
     /// 브랜치별 Git 실행 오류. 다른 브랜치는 계속 처리한다.
     pub errors: Vec<CleanupError>,
-}
-
-/// 최신화 직전에 다시 확인할 로컬 브랜치 상태.
-struct Branch {
-    /// `refs/heads/`로 시작하는 이름.
-    name: String,
-    /// 처음 읽은 commit. 갱신 전에 동일한지 확인한다.
-    commit: ObjectId,
-    /// Git 설정에서 읽은 upstream ref.
-    upstream: String,
-    /// upstream remote 이름. 다른 remote나 로컬 upstream은 갱신하지 않는다.
-    remote: String,
 }
 
 /// remote를 fetch한 뒤, 해당 remote의 upstream을 추적하는 브랜치만 최신화한다.
@@ -104,7 +93,7 @@ pub fn synchronize<R: GitRunner + ?Sized>(
             "^refs/heads/HEAD".as_ref(),
         ],
     )?;
-    let branches = read_branches(runner, path)?;
+    let branches = runner.open_read(path)?.tracked_branches()?;
     let targets: HashMap<_, _> = refs::list_refs(runner, path, &["refs/remotes/"], None)?
         .into_iter()
         .filter(|entry| entry.is_commit && !entry.is_symbolic)
@@ -140,7 +129,10 @@ pub fn synchronize<R: GitRunner + ?Sized>(
 }
 
 /// upstream과 commit을 한 번에 읽는다. symbolic branch는 갱신 대상에서 제외한다.
-fn read_branches<R: GitRunner + ?Sized>(runner: &R, path: &Path) -> Result<Vec<Branch>> {
+pub(crate) fn read_branches_process<R: GitRunner + ?Sized>(
+    runner: &R,
+    path: &Path,
+) -> Result<Vec<Branch>> {
     let output = checked(runner, path, &[
         "for-each-ref".as_ref(),
         "--format=%(refname)%00%(objectname)%00%(upstream:remoteref)%00%(upstream:remotename)%00%(symref)".as_ref(),
@@ -181,35 +173,18 @@ fn update_branch<R: GitRunner + ?Sized>(
     branch: &Branch,
     target: &ObjectId,
 ) -> Result<Option<&'static str>> {
-    let ancestor = runner.run(
-        path,
-        &[
-            "merge-base".as_ref(),
-            "--is-ancestor".as_ref(),
-            branch.commit.as_ref(),
-            target.as_ref(),
-        ],
-    )?;
-    match ancestor.exit_code {
-        Some(0) => {}
-        Some(1) => return Ok(Some("local commits are ahead or diverged")),
-        _ => return Err(ancestor.failure("merge-base")),
+    if !refs::is_ancestor(runner, path, &branch.commit, target)? {
+        return Ok(Some("local commits are ahead or diverged"));
     }
     if refs::resolve_commit(runner, path, &branch.name)?.as_ref() != Some(&branch.commit) {
         return Ok(Some("branch changed during update"));
     }
-    let symbolic = runner.run(
-        path,
-        &[
-            "symbolic-ref".as_ref(),
-            "--quiet".as_ref(),
-            branch.name.as_ref(),
-        ],
-    )?;
-    match symbolic.exit_code {
-        Some(0) => return Ok(Some("branch became symbolic during update")),
-        Some(1) => {}
-        _ => return Err(symbolic.failure("symbolic-ref")),
+    if runner
+        .open_read(path)?
+        .symbolic_ref(&branch.name)?
+        .is_some()
+    {
+        return Ok(Some("branch became symbolic during update"));
     }
     let worktrees = worktree::list(runner, path)?;
     if let Some(tree) = worktrees
@@ -271,12 +246,11 @@ fn update_worktree<R: GitRunner + ?Sized>(
             return Ok(Some("another Git operation is in progress"));
         }
     }
-    let head = checked(
-        runner,
-        &tree.path,
-        &["symbolic-ref".as_ref(), "--quiet".as_ref(), "HEAD".as_ref()],
-    )?;
-    if head.stdout_lossy().trim_end() != branch.name
+    if runner
+        .open_read(&tree.path)?
+        .symbolic_ref("HEAD")?
+        .as_deref()
+        != Some(branch.name.as_str())
         || refs::resolve_commit(runner, &tree.path, "HEAD")?.as_ref() != Some(&branch.commit)
     {
         return Ok(Some("worktree changed during update"));

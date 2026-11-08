@@ -19,7 +19,7 @@ use crate::cleanup::candidate::{
 use crate::error::Result;
 use crate::git::default_branch::{self, BaseBranchQuery};
 use crate::git::refs::{self, LOCAL_BRANCH_PREFIX, RefEntry};
-use crate::git::repository::{self, RepositoryId};
+use crate::git::repository::RepositoryId;
 use crate::git::runner::GitRunner;
 use crate::git::worktree::{self, WorktreeEntry};
 
@@ -69,8 +69,10 @@ impl<'r, R: GitRunner + ?Sized> CleanupPlanner<'r, R> {
     /// ([`crate::error::CleanupError::DefaultBranchUnknown`] 등), ref/worktree 목록 조회 실패.
     pub fn scan(&self, request: &ScanRequest<'_>) -> Result<CleanupPlan> {
         let path = request.path;
-        let identity = repository::identify(self.runner, path)?;
-        let base = default_branch::resolve(self.runner, path, request.base)?;
+        let mut reader = self.runner.open_read(path)?;
+        let identity = reader.identity()?;
+        let base =
+            default_branch::resolve_with_reader(self.runner, path, request.base, reader.as_mut())?;
 
         // `refs/heads/`와 검증된 custom namespace를 한 번에 조회한다.
         let mut patterns: Vec<&str> = Vec::with_capacity(1 + request.custom_ref_namespaces.len());
@@ -82,13 +84,13 @@ impl<'r, R: GitRunner + ?Sized> CleanupPlanner<'r, R> {
                 log::warn!("ignoring invalid custom ref namespace: {namespace}");
             }
         }
-        let all_refs = refs::list_refs(self.runner, path, &patterns, None)?;
-        let merged: HashSet<String> =
-            refs::list_refs(self.runner, path, &patterns, Some(&base.commit))?
-                .into_iter()
-                .map(|entry| entry.name)
-                .collect();
-        let worktrees = worktree::list(self.runner, path)?;
+        let all_refs = reader.list_refs(&patterns, None)?;
+        let merged: HashSet<String> = reader
+            .list_refs(&patterns, Some(&base.commit))?
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        let worktrees = reader.worktrees()?;
         // branch ref → 그 branch를 checkout한 worktree. detached worktree는 정리 대상이 아니다.
         let worktree_by_branch: HashMap<&str, &WorktreeEntry> = worktrees
             .iter()

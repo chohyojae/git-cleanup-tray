@@ -10,12 +10,26 @@
 // test 파일마다 쓰는 helper가 달라, 각 test crate에서 안 쓰는 함수가 dead code 경고를 낸다.
 #![allow(dead_code)]
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::process::Stdio;
 
 use git_cleanup_tray::cleanup::planner::ScanRequest;
 use git_cleanup_tray::git::default_branch::BaseBranchQuery;
 use git_cleanup_tray::git::repository::RepositoryId;
+
+/// 같은 안전 테스트를 Git 명령과 라이브러리로 각각 실행한다. 기본은 기존 Git 명령이다.
+#[must_use]
+pub fn test_runner() -> git_cleanup_tray::git::in_process::InProcessGitRunner {
+    use git_cleanup_tray::git::in_process::InProcessGitRunner;
+    use git_cleanup_tray::git::runner::ProcessGitRunner;
+    if std::env::var_os("GIT_CLEANUP_TEST_READS").is_some_and(|value| value == "gix") {
+        InProcessGitRunner::default()
+    } else {
+        InProcessGitRunner::commands_only(ProcessGitRunner::new())
+    }
+}
 
 /// test 하나가 쓰는 임시 directory. drop될 때 통째로 지워진다.
 pub struct Sandbox {
@@ -28,6 +42,42 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
+    /// 대량 fixture 입력을 표준 입력으로 전달하고 사용자 Git 설정과 격리한다.
+    ///
+    /// # Panics
+    /// Git 실행·입력 쓰기·종료에 실패하면 fixture 구성 실패로 중단한다.
+    pub fn git_input(&self, dir: &Path, args: &[&str], input: &[u8]) -> String {
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", &self.config)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "fixture")
+            .env("GIT_AUTHOR_EMAIL", "fixture@example.com")
+            .env("GIT_COMMITTER_NAME", "fixture")
+            .env("GIT_COMMITTER_EMAIL", "fixture@example.com")
+            .env("LC_ALL", "C")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start fixture git");
+        child
+            .stdin
+            .take()
+            .expect("fixture stdin")
+            .write_all(input)
+            .expect("write fixture input");
+        let output = child.wait_with_output().expect("wait fixture git");
+        assert!(
+            output.status.success(),
+            "fixture git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("UTF-8 fixture output")
+    }
+
     /// 공백과 한글이 들어간 기준 경로를 가진 sandbox를 만든다.
     ///
     /// # Panics
@@ -36,7 +86,12 @@ impl Sandbox {
     #[must_use]
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let root = dir.path().join("한글 sandbox 경로");
+        // macOS의 `/var` 별칭 차이가 조회 결과 비교에 섞이지 않도록 실제 경로를 쓴다.
+        let root = dir
+            .path()
+            .canonicalize()
+            .expect("physical temporary path")
+            .join("한글 sandbox 경로");
         std::fs::create_dir(&root).expect("create sandbox root");
         let config = dir.path().join("empty-gitconfig");
         std::fs::write(&config, "").expect("create empty gitconfig");

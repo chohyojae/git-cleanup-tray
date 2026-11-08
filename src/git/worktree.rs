@@ -37,7 +37,10 @@ pub struct WorktreeEntry {
 /// # Errors
 ///
 /// Git 실행이 실패하면 [`crate::error::CleanupError::GitCommandFailed`].
-pub fn list<R: GitRunner + ?Sized>(runner: &R, repository: &Path) -> Result<Vec<WorktreeEntry>> {
+pub(crate) fn list_process<R: GitRunner + ?Sized>(
+    runner: &R,
+    repository: &Path,
+) -> Result<Vec<WorktreeEntry>> {
     let output = runner.run(
         repository,
         &[
@@ -115,7 +118,7 @@ fn parse_porcelain(stdout: &[u8]) -> Vec<WorktreeEntry> {
 ///
 /// 경로가 없거나 Git 실행이 실패하면 [`crate::error::CleanupError::GitCommandFailed`].
 /// 상태를 알 수 없으면 clean으로 취급하지 않도록 호출자는 오류를 "삭제하지 않음"으로 처리해야 한다.
-pub fn is_clean<R: GitRunner + ?Sized>(runner: &R, worktree: &Path) -> Result<bool> {
+pub(crate) fn is_clean_process<R: GitRunner + ?Sized>(runner: &R, worktree: &Path) -> Result<bool> {
     let output = runner.run(
         worktree,
         &[
@@ -128,6 +131,22 @@ pub fn is_clean<R: GitRunner + ?Sized>(runner: &R, worktree: &Path) -> Result<bo
         return Err(output.failure("status"));
     }
     Ok(output.stdout.is_empty())
+}
+
+/// 메인·연결 워크트리와 잠금·경로 누락 상태를 읽는다.
+///
+/// # Errors
+/// 저장소 접근과 해당 조회 작업의 오류를 반환한다.
+pub fn list<R: GitRunner + ?Sized>(runner: &R, repository: &Path) -> Result<Vec<WorktreeEntry>> {
+    runner.open_read(repository)?.worktrees()
+}
+
+/// 스테이징·작업 파일·추적하지 않는 파일 변경이 없는지 저장소 전체를 검사한다.
+///
+/// # Errors
+/// 저장소 접근과 해당 조회 작업의 오류를 반환한다.
+pub fn is_clean<R: GitRunner + ?Sized>(runner: &R, repository: &Path) -> Result<bool> {
+    runner.open_read(repository)?.is_clean()
 }
 
 #[cfg(test)]
