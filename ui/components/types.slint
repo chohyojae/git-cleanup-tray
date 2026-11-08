@@ -16,6 +16,8 @@ export struct RepositoryRowData {
     activity: string,
     // Scan All / Clean All 대상 여부.
     enabled: bool,
+    // 이 저장소의 Scan이 실행 또는 대기 중이면 중복 요청을 막는다.
+    scan-pending: bool,
 }
 
 // 상세 화면 항목 하나 (PLAN 14장).

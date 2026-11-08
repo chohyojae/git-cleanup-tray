@@ -6,8 +6,10 @@
 export component AppTray inherits SystemTrayIcon {
     // 마지막 실행 결과 요약. Rust의 application state가 갱신한다.
     in property <string> last-result: "No runs yet";
-    // 작업 실행 중에는 Scan All / Clean All을 비활성화해 중복 실행을 막는다.
+    // 작업 실행 중에는 변경 작업 메뉴를 비활성화한다.
     in property <bool> busy: false;
+    // 다른 저장소의 Scan 중에도 Scan All로 나머지 저장소를 요청할 수 있다.
+    in property <bool> scan-blocked: false;
     // tooltip에 붙일 상태 문구 (Scanning, Error 등). idle이면 빈 문자열이다.
     in property <string> status: "";
 
@@ -39,7 +41,7 @@ export component AppTray inherits SystemTrayIcon {
         }
         MenuItem {
             title: "Scan All";
-            enabled: !root.busy;
+            enabled: !root.scan-blocked;
             activated => { root.scan-all-requested(); }
         }
         MenuItem {

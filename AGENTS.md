@@ -74,6 +74,7 @@ cargo build --release     # 성능·크기에 영향을 주는 변경일 때
 - 메인 창은 Open 시점에 만들고, 닫으면 숨기지 말고 instance를 drop한다 (`app::show_main_window` 참고). 단, 같은 process 안에서는 drop해도 renderer·폰트·힙 단편화가 남아 메모리가 돌아오지 않는다 (창을 열었다 닫은 뒤 37MB 측정). GUI를 별도 process로 분리하는 구조 변경을 검토 중이다.
 - worker thread를 상주시키지 않는다. 작업 요청 시 생성하고 끝나면 종료한다. thread pool, async runtime(tokio 등)을 들이지 않는다.
 - Scan 결과, 이력 등 큰 데이터를 메모리에 계속 들고 있지 않는다. 화면에 필요한 요약만 남기고 상세는 필요할 때 다시 만든다. 이력은 최근 100건으로 제한한다.
+- 개별 Scan과 Scan All은 같은 저장소별 대기 목록을 사용하고 CPU 수에 따라 기본 2~4개까지 동시에 실행한다. 같은 저장소의 중복 실행과 변경 작업과의 겹침은 막는다. 완료 이벤트가 오면 다음 대기 항목을 시작하며, 취소하면 대기 항목을 버리고 실행 중인 worker를 회수한다.
 - 기준값(2026-11-02, macOS, profiling build, tray only): CPU 0%, physical footprint 14.1MB (Phase 3 시점 약 16MB). 참고로 Slint 없이 AppKit `NSStatusItem`만 띄운 최소 앱도 12.7MB이며, 이 값이 macOS 트레이 앱의 하한이다. 변경 후 이 값이 눈에 띄게 늘면 원인을 찾아 PR에 적는다.
 - 측정: `cargo build --profile profiling` 후 `vmmap --summary <pid> | grep "Physical footprint"`. 할당 위치는 `MallocStackLogging=lite`로 실행하고 `malloc_history <pid> -allBySize`로 본다.
 

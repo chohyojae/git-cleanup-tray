@@ -6,17 +6,18 @@
 //! 때만 만들고, 닫으면 instance를 drop해 idle 메모리를 tray 수준으로 되돌린다.
 //!
 //! ```text
-//! Scan       : worker(설정 로드 → 저장소 순차 Scan) → 저장소 요약·tray "Last result" 갱신
+//! Scan       : 저장소별 worker(설정 로드 → Scan) → 완료한 저장소의 요약 갱신
 //! Clean      : worker(Scan) → 확인 dialog → worker(순차 Execute + 이력 저장) → 결과 표시
 //! 목록 변경   : worker(repositories.json 읽기 → 변경 → 저장) → 목록 갱신
 //! ```
 //!
-//! 한 번에 작업 하나만 실행한다. Clean 확인을 기다리는 동안에도 새 작업을 받지 않으므로 같은
-//! 저장소에 두 작업이 겹치지 않는다 (PLAN 19장).
+//! 서로 다른 저장소의 Scan은 제한된 수만큼 동시에 실행한다. 변경 작업과 Clean 확인 중에는
+//! 새 Scan을 받지 않아 검사와 변경이 겹치지 않는다 (PLAN 19장).
 
 pub mod commands;
 pub mod maintenance;
 pub mod registration;
+mod scans;
 mod schedule;
 pub mod state;
 pub mod tasks;
@@ -33,7 +34,9 @@ use slint::{ComponentHandle, PlatformError, VecModel};
 
 use crate::error::Result as CleanupResult;
 use crate::git::repository::RepositoryId;
+use crate::jobs::batch::PlanTotals;
 use crate::jobs::cancellation::CancellationToken;
+use crate::jobs::queue::ScanQueue;
 use crate::jobs::{self, Job};
 use crate::storage::repository_store::RepositoryConfig;
 use crate::storage::settings_store::{AppSettings, MaintenanceInterval};
@@ -68,6 +71,14 @@ struct App {
     status: Cell<TrayStatus>,
     /// 실행 중인 background 작업.
     job: RefCell<Option<RunningJob>>,
+    /// Scan All과 개별 Scan이 공유하는 실행·대기 목록.
+    scans: RefCell<ScanQueue>,
+    /// 현재 묶음에서 끝난 검사의 합계. 상세 계획은 보관하지 않는다.
+    scan_totals: RefCell<PlanTotals>,
+    /// 현재 묶음에서 완료한 저장소 수.
+    scan_completed: Cell<usize>,
+    /// 현재 검사 묶음을 사용자가 취소했는지.
+    scan_cancelled: Cell<bool>,
     /// 사용자 확인을 기다리는 정리 계획. dialog를 닫거나 실행을 시작하면 비운다.
     pending: RefCell<Option<PendingCleanup>>,
     /// 등록 저장소와 화면 요약. 시작 시 한 번 읽고 작업 결과로 갱신한다. 저장소 수에 비례해 작다.
@@ -192,6 +203,10 @@ pub fn run() -> Result<(), PlatformError> {
         about_window: RefCell::new(None),
         status: Cell::new(TrayStatus::Idle),
         job: RefCell::new(None),
+        scans: RefCell::new(ScanQueue::default()),
+        scan_totals: RefCell::new(PlanTotals::default()),
+        scan_completed: Cell::new(0),
+        scan_cancelled: Cell::new(false),
         pending: RefCell::new(None),
         repositories: RefCell::new(Vec::new()),
         settings: RefCell::new(AppSettings::default()),
@@ -214,10 +229,13 @@ pub fn run() -> Result<(), PlatformError> {
     let result = slint::run_event_loop_until_quit();
 
     let app = APP.with(|slot| slot.borrow_mut().take());
-    if let Some(running) = app.and_then(|app| app.job.borrow_mut().take()) {
-        log::info!("waiting for the running job to stop");
-        running.job.cancel();
-        running.job.join();
+    if let Some(app) = app {
+        app.scans.borrow_mut().join();
+        if let Some(running) = app.job.borrow_mut().take() {
+            log::info!("waiting for the running job to stop");
+            running.job.cancel();
+            running.job.join();
+        }
     }
     log::info!("tray stopped");
     result
@@ -276,7 +294,9 @@ fn dispatch(command: AppCommand) {
 impl App {
     /// 실행 중인 작업이 있거나 Clean 확인을 기다리는 중이면 `true`.
     fn is_busy(&self) -> bool {
-        self.job.borrow().is_some() || self.pending.borrow().is_some()
+        self.job.borrow().is_some()
+            || self.pending.borrow().is_some()
+            || self.scans.borrow().has_work()
     }
 
     /// tray 상태를 바꾸고 화면에 반영한다.
@@ -290,8 +310,18 @@ impl App {
     /// `job`/`pending`을 바꾼 뒤에 호출해야 값이 맞는다.
     fn refresh_busy(&self) {
         let busy = self.is_busy();
-        let status = self.status.get();
+        let scans = self.scans.borrow();
+        let scan_blocked =
+            self.job.borrow().is_some() || self.pending.borrow().is_some() || scans.is_cancelling();
+        let scanning = scans.has_work();
+        drop(scans);
+        let status = if scanning {
+            TrayStatus::Scanning
+        } else {
+            self.status.get()
+        };
         self.tray.set_busy(busy);
+        self.tray.set_scan_blocked(scan_blocked);
         let label = if status == TrayStatus::Idle {
             ""
         } else {
@@ -302,9 +332,11 @@ impl App {
             .job
             .borrow()
             .as_ref()
-            .is_some_and(|running| running.cancellable);
+            .is_some_and(|running| running.cancellable)
+            || scanning;
         if let Some(view) = self.main_window.borrow().as_ref() {
             view.window.set_busy(busy);
+            view.window.set_scan_blocked(scan_blocked);
             view.window
                 .set_picking_folders(self.folder_picker_open.get());
             view.window.set_can_cancel(can_cancel);
@@ -350,7 +382,7 @@ impl App {
         work: impl FnOnce(&CancellationToken) -> T + Send + 'static,
         finish: impl FnOnce(&App, Option<T>) + Send + 'static,
     ) -> bool {
-        if self.job.borrow().is_some() {
+        if self.job.borrow().is_some() || self.scans.borrow().has_work() {
             log::info!("{name} ignored: another job is running");
             return false;
         }
@@ -390,6 +422,11 @@ impl App {
 
     /// 진행 중인 Scan / Clean에 취소를 요청한다.
     fn cancel_job(&self) {
+        if self.scans.borrow().has_work() {
+            self.scan_cancelled.set(true);
+            self.scans.borrow_mut().cancel();
+            self.refresh_scan_progress();
+        }
         let cancelled = self.job.borrow().as_ref().is_some_and(|running| {
             if running.cancellable {
                 running.job.cancel();
@@ -476,8 +513,12 @@ impl App {
 
     /// Scan을 background에서 시작한다.
     ///
-    /// 다른 작업이 진행 중이면 무시한다. Clean 확인 dialog가 떠 있으면 그 창을 앞으로 가져온다.
+    /// 일반 Scan은 공유 queue에 추가한다. 정리 전 검사와 상세 검사는 다른 작업과 겹치지 않는다.
     fn start_scan(&self, purpose: ScanPurpose) {
+        if matches!(purpose, ScanPurpose::ScanAll | ScanPurpose::Scan(_)) {
+            self.enqueue_scans(purpose.scope());
+            return;
+        }
         if self.is_busy() {
             log::info!("{purpose:?} ignored: another job is running");
             if let Some(dialog) = self.cleanup_dialog.borrow().as_ref()
@@ -848,6 +889,7 @@ impl App {
     /// 앱을 종료한다. 실행 중인 작업에는 취소를 요청하고, 확인 대기 중인 계획은 버린다.
     fn quit(&self) {
         self.maintenance_timer.stop();
+        self.scans.borrow_mut().cancel();
         if let Some(running) = self.job.borrow().as_ref() {
             running.job.cancel();
         }
@@ -998,11 +1040,30 @@ impl App {
         });
     }
 
+    /// 저장소별 Scan 실행·대기 상태를 포함한 화면 행을 만든다.
+    fn repository_rows(&self) -> Vec<RepositoryRowData> {
+        let entries = self.repositories.borrow();
+        let scans = self.scans.borrow();
+        let mut rows = crate::ui::models::repository_rows(&entries, tasks::now_secs());
+        for (row, entry) in rows.iter_mut().zip(entries.iter()) {
+            let id = entry.config.id;
+            row.scan_pending = scans.contains(id);
+            if row.scan_pending {
+                row.status = if scans.is_running(id) {
+                    "Scanning…"
+                } else {
+                    "Queued for scan"
+                }
+                .into();
+            }
+        }
+        rows
+    }
+
     /// 메인 창 목록을 현재 저장소 상태로 맞춘다. 창이 닫혀 있으면 아무것도 하지 않는다.
     fn refresh_rows(&self) {
         if let Some(view) = self.main_window.borrow().as_ref() {
-            let rows =
-                crate::ui::models::repository_rows(&self.repositories.borrow(), tasks::now_secs());
+            let rows = self.repository_rows();
             crate::ui::models::sync_rows(&view.rows, rows);
         }
     }

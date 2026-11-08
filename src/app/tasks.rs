@@ -174,7 +174,7 @@ pub struct ScanReport {
     pub finished_at: u64,
 }
 
-/// worker thread: 설정과 저장소 목록을 읽고 `scope`의 저장소를 순서대로 Scan한다.
+/// worker thread: 설정과 저장소 목록을 읽고 `scope`의 저장소들을 제한된 수만큼 동시에 Scan한다.
 ///
 /// # Errors
 ///

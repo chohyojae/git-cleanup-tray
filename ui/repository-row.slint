@@ -9,8 +9,10 @@ import { RepositoryRowData } from "components/types.slint";
 export component RepositoryRow inherits Rectangle {
     // 표시할 저장소 정보.
     in property <RepositoryRowData> data;
-    // 작업 실행 중에는 Scan / Clean 버튼을 비활성화한다.
+    // 작업 실행 중에는 변경 작업 버튼을 비활성화한다.
     in property <bool> busy;
+    // 다른 저장소의 Scan 중에는 이 저장소의 Scan을 허용한다.
+    in property <bool> scan-blocked;
 
     // 줄 단위 요청. 어떤 저장소인지는 메인 창이 index로 붙인다.
     callback scan();
@@ -70,7 +72,7 @@ export component RepositoryRow inherits Rectangle {
             }
             Button {
                 text: "Scan";
-                enabled: !root.busy;
+                enabled: !root.scan-blocked && !root.data.scan-pending;
                 clicked => { root.scan(); }
             }
             Button {

@@ -24,6 +24,7 @@ pub fn repository_rows(entries: &[RepositoryEntry], now: u64) -> Vec<RepositoryR
             status: text::repository_status(&entry.summary.outcome).into(),
             activity: text::repository_activity(&entry.summary, now).into(),
             enabled: entry.config.enabled,
+            scan_pending: false,
         })
         .collect()
 }

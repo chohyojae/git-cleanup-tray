@@ -7,6 +7,7 @@
 //! 의존하지 않으므로, UI thread로 넘기는 일은 호출자(`app`)가 `deliver` callback에서 한다.
 //!
 //! - 같은 저장소에 두 작업을 동시에 실행하지 않는다.
+//! - 개별 Scan과 Scan All은 저장소별 queue에서 제한된 수만큼 동시에 실행한다.
 //! - Clean All은 저장소를 순차 처리한다.
 //! - idle 상태에서는 worker thread를 남겨 두지 않는다 (요청 시 생성, 끝나면 종료).
 

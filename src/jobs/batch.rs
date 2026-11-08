@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! 여러 저장소를 순차 처리하는 Scan All / Clean All 본체 (PLAN 12장).
+//! 여러 저장소의 동시 Scan과 순차 Clean All 본체 (PLAN 12장).
 //!
-//! GUI 없이 test할 수 있도록 thread나 UI와 무관한 동기 함수로 둔다. worker thread에서의 실행은
-//! [`super::spawn`]이 맡는다. 한 저장소가 실패해도 다음 저장소를 계속 처리하고, 취소 요청은
-//! 저장소 사이에서만 확인한다 (MVP에서는 병렬 처리하지 않는다).
+//! 호출한 worker에서 결과를 기다리되 UI에는 의존하지 않는다. Scan은 제한된 수만큼 동시에,
+//! Clean은 순서대로 처리한다. 취소 후에는 새 저장소를 시작하지 않고 이미 시작한 검사를 회수한다.
+
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::mpsc;
+use std::thread;
 
 use crate::cleanup::CleanupPlan;
 use crate::cleanup::candidate::SkipReason;
 use crate::cleanup::executor::CleanupExecutor;
 use crate::cleanup::planner::{CleanupPlanner, ScanRequest};
 use crate::cleanup::result::CleanupResult;
-use crate::error::Result;
+use crate::error::{CleanupError, Result};
 use crate::git::repository::RepositoryId;
 use crate::git::runner::GitRunner;
 use crate::jobs::cancellation::CancellationToken;
@@ -25,7 +28,7 @@ pub struct RepositoryScan {
     pub outcome: Result<CleanupPlan>,
 }
 
-/// 순차 처리 진행 상황. 저장소 하나를 시작할 때마다 progress callback에 넘긴다.
+/// 저장소 하나를 시작할 때마다 progress callback에 넘기는 입력 위치와 대상.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Progress {
     /// 지금 시작하는 저장소의 순번 (0부터).
@@ -36,50 +39,106 @@ pub struct Progress {
     pub repository_id: RepositoryId,
 }
 
-/// `requests`를 순서대로 Scan한다. 어떤 Git 상태도 바꾸지 않는다.
+/// `requests`를 기본 동시 실행 수만큼 나눠 Scan한다. 어떤 Git 상태도 바꾸지 않는다.
 ///
-/// 결과는 입력 순서를 따른다. 저장소를 시작할 때마다 `on_progress`를 호출하고, 취소되면 그
-/// 시점까지의 결과만 돌려준다.
+/// 완료 순서와 관계없이 결과는 입력 순서를 따른다. `on_progress`는 호출한 thread에서만 실행한다.
+/// 취소되면 이미 시작한 저장소까지만 회수한다. 저장소 하나는 추가 thread 없이 호출자가 처리한다.
 pub fn scan_all<R: GitRunner + ?Sized>(
     runner: &R,
     requests: &[ScanRequest<'_>],
     cancel: &CancellationToken,
     on_progress: &mut dyn FnMut(Progress),
 ) -> Vec<RepositoryScan> {
-    let planner = CleanupPlanner::new(runner);
-    let mut scans = Vec::with_capacity(requests.len());
-    for (index, request) in requests.iter().enumerate() {
-        if cancel.is_cancelled() {
-            log::info!("scan cancelled");
-            break;
-        }
-        on_progress(Progress {
-            index,
-            total: requests.len(),
-            repository_id: request.repository_id,
-        });
-        let outcome = planner.scan(request);
-        match &outcome {
-            Ok(plan) => log::info!(
-                "scanned repository {}: {} removable, {} skipped, {} errors (base {} via {:?})",
-                request.repository_id.0,
-                plan.removable_count(),
-                plan.skipped.len(),
-                plan.errors.len(),
-                plan.base.branch,
-                plan.base.source,
-            ),
-            Err(error) => log::warn!(
-                "scan failed for repository {}: {error}",
-                request.repository_id.0
-            ),
-        }
-        scans.push(RepositoryScan {
-            repository_id: request.repository_id,
-            outcome,
-        });
+    if requests.len() <= 1 {
+        return requests
+            .iter()
+            .enumerate()
+            .take_while(|_| !cancel.is_cancelled())
+            .map(|(index, request)| {
+                on_progress(Progress {
+                    index,
+                    total: requests.len(),
+                    repository_id: request.repository_id,
+                });
+                scan_one(runner, request)
+            })
+            .collect();
     }
-    scans
+    let mut scans: Vec<Option<RepositoryScan>> = std::iter::repeat_with(|| None)
+        .take(requests.len())
+        .collect();
+    let (sender, receiver) = mpsc::channel();
+    let limit = super::queue::scan_parallelism();
+    thread::scope(|scope| {
+        let mut next = 0;
+        let mut running = 0;
+        loop {
+            while running < limit && next < requests.len() && !cancel.is_cancelled() {
+                let index = next;
+                next += 1;
+                let request = &requests[index];
+                on_progress(Progress {
+                    index,
+                    total: requests.len(),
+                    repository_id: request.repository_id,
+                });
+                let sender = sender.clone();
+                match thread::Builder::new()
+                    .name("scan-repository".into())
+                    .spawn_scoped(scope, move || {
+                        // 저장소 하나의 panic이 다른 저장소의 검사 결과를 잃게 하지 않는다.
+                        let scan = catch_unwind(AssertUnwindSafe(|| scan_one(runner, request)))
+                            .unwrap_or_else(|_| RepositoryScan {
+                                repository_id: request.repository_id,
+                                outcome: Err(CleanupError::Io(std::io::Error::other(
+                                    "Scan worker panicked",
+                                ))),
+                            });
+                        let _ = sender.send((index, scan));
+                    }) {
+                    Ok(_) => running += 1,
+                    Err(error) => {
+                        scans[index] = Some(RepositoryScan {
+                            repository_id: request.repository_id,
+                            outcome: Err(CleanupError::Io(error)),
+                        });
+                    }
+                }
+            }
+            if running == 0 {
+                break;
+            }
+            if let Ok((index, scan)) = receiver.recv() {
+                scans[index] = Some(scan);
+                running -= 1;
+            }
+        }
+    });
+    scans.into_iter().flatten().collect()
+}
+
+/// 저장소 하나의 읽기 검사를 수행하고 결과를 요약해 기록한다.
+fn scan_one<R: GitRunner + ?Sized>(runner: &R, request: &ScanRequest<'_>) -> RepositoryScan {
+    let outcome = CleanupPlanner::new(runner).scan(request);
+    match &outcome {
+        Ok(plan) => log::info!(
+            "scanned repository {}: {} removable, {} skipped, {} errors (base {} via {:?})",
+            request.repository_id.0,
+            plan.removable_count(),
+            plan.skipped.len(),
+            plan.errors.len(),
+            plan.base.branch,
+            plan.base.source,
+        ),
+        Err(error) => log::warn!(
+            "scan failed for repository {}: {error}",
+            request.repository_id.0
+        ),
+    }
+    RepositoryScan {
+        repository_id: request.repository_id,
+        outcome,
+    }
 }
 
 /// `plans`를 순서대로 실행한다. 삭제할 항목이 없는 plan은 건너뛴다.

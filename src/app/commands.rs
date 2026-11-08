@@ -13,7 +13,7 @@ pub enum AppCommand {
     OpenMainWindow,
     /// tray icon 좌클릭 (Windows). 설정에 따라 메인 창을 연다.
     TrayClicked,
-    /// enabled 저장소 전체 순차 검사.
+    /// enabled 저장소 전체를 공유 상한 안에서 동시 검사.
     ScanAll,
     /// 전체 재검사 → 요약 → 사용자 확인 → 순차 실행.
     CleanAll,

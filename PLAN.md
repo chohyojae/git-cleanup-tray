@@ -528,7 +528,13 @@ Tray interaction과 GUI가 동일 application state를 사용하도록 Rust appl
 
 ### Scan All
 
-Enabled repository 전체를 순차 검사한다.
+Enabled repository 전체를 저장소별로 동시에 검사한다. CPU 수에 따라 기본 2~4개까지
+실행하고 나머지는 대기한다. 개별 Scan도 같은 대기 목록과 상한을 사용하므로 다른
+저장소가 검사 중이어도 요청할 수 있다. 같은 저장소의 중복 검사는 막는다.
+
+완료한 저장소부터 결과를 갱신하며 각 행에 실행·대기 상태를 표시한다. 취소하면 대기
+항목을 버리고 이미 시작한 검사는 회수한다. 변경 작업과 Clean 확인 중에는 새 검사를
+받지 않는다. 작업이 없을 때는 스레드나 반복 타이머를 남기지 않는다.
 
 결과:
 
@@ -798,6 +804,13 @@ git-cleanup-tray/
 
 ## 18. Git Process 실행 정책
 
+2026-11-08: Windows의 반복 Git 프로세스 실행 지연을 줄이기 위한
+[인프로세스 Git 검토안](docs/in-process-git/README.md)을 추가했다.
+저장소별 동시 Git 명령 실행을 먼저 구현하고, 같은 수의 작업 스레드를 사용하는
+라이브러리 처리와 비교한다. 라이브러리 도입은 아직 채택·구현 전이다.
+아래 실행 정책과 24장·부록 A.12의 안전 정책은 그대로 적용한다.
+라이브러리 조회를 도입할 때 허용 범위를 이 문서와 `AGENTS.md`에 반영한 뒤 적용한다.
+
 shell command string을 만들지 않는다.
 
 나쁜 예:
@@ -838,6 +851,9 @@ Git scan/cleanup은 worker thread 또는 background task에서 수행한다.
 규칙:
 
 - 동일 repository에 두 job을 동시에 실행하지 않는다.
+- 개별 Scan과 Scan All은 저장소별 대기 목록을 공유하며 기본 2~4개까지 동시에 검사한다.
+- 다른 저장소의 Scan 중에도 새 Scan 요청을 받고, 완료한 저장소부터 결과를 갱신한다.
+- Scan은 변경 작업과 겹치지 않으며, idle 상태에 상주 worker나 polling을 추가하지 않는다.
 - Clean All은 기본적으로 repository를 순차 처리한다.
 - UI button double-click에 의한 중복 실행을 막는다.
 - 외부 Git process가 사용 중인 lock을 임의로 삭제하지 않는다.

@@ -10,8 +10,10 @@ import { RepositoryRow } from "repository-row.slint";
 export component MainWindow inherits Window {
     // 등록 저장소 목록. Rust 쪽 `VecModel`을 재사용해 바뀐 줄만 갱신한다.
     in property <[RepositoryRowData]> repositories;
-    // 작업 실행 중에는 버튼을 비활성화해 double-click 중복 실행을 막는다.
+    // 작업 실행 중에는 변경 작업 버튼을 비활성화한다.
     in property <bool> busy: false;
+    // 변경 작업·확인 대기·취소 중일 때만 새 Scan을 막는다.
+    in property <bool> scan-blocked: false;
     // native 폴더 선택 창이 열려 있으면 Add 버튼의 중복 실행을 막는다.
     in property <bool> picking-folders: false;
     // 탐색기/Finder에서 경로를 창 위로 끌어오는 동안 추가 안내를 보여준다.
@@ -65,7 +67,7 @@ export component MainWindow inherits Window {
             }
             Button {
                 text: "Scan All";
-                enabled: !root.busy;
+                enabled: !root.scan-blocked;
                 clicked => { root.scan-all-requested(); }
             }
             Button {
@@ -105,6 +107,7 @@ export component MainWindow inherits Window {
                 RepositoryRow {
                     data: row;
                     busy: root.busy;
+                    scan-blocked: root.scan-blocked;
                     scan => { root.scan-requested(index); }
                     update => { root.update-requested(index); }
                     clean => { root.clean-requested(index); }

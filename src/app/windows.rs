@@ -116,10 +116,7 @@ impl App {
             return view.window.show();
         }
         let window = MainWindow::new()?;
-        let rows = Rc::new(VecModel::from(crate::ui::models::repository_rows(
-            &self.repositories.borrow(),
-            super::tasks::now_secs(),
-        )));
+        let rows = Rc::new(VecModel::from(self.repository_rows()));
         window.set_repositories(ModelRc::from(Rc::clone(&rows)));
         window.set_notice(self.notice.borrow().as_str().into());
         connect_main_window(&window);
