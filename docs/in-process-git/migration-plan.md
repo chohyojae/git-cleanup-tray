@@ -2,7 +2,7 @@
 
 # 동시 검사와 gix 조회 전환
 
-2026-11-09 구현 반영. [macOS 측정 결과](macos-results-2026-11-09.md)와 [Windows 후속 계획](windows-benchmark.md)을 함께 봅니다.
+2026-11-09 구현 반영. [macOS 측정 결과](macos-results-2026-11-09.md), [Windows x64 측정 결과](windows-results-2026-11-09.md), [추가 측정 계획](windows-benchmark.md)을 함께 봅니다.
 
 ## 연결 구조
 
@@ -27,7 +27,7 @@
 | 워크트리·파일 검사 | 완료. 메인·등록·detached·잠금·경로 누락, 스테이징·추적/미추적 파일·서브모듈 확인 |
 | 실행 직전 조회 | 완료. 정리·최신화 재검사 때 새 조회 상태 사용, 상태 변경 시 건너뜀 |
 | 앱 기본 연결 | Auto Git에서 gix 사용. Custom Git과 미지원 설정은 Git 명령 조회 |
-| 같은 동시 실행 수 비교 | macOS에서 1·2·4개씩 측정. Windows x64·ARM64 실행·호환성·메모리는 후속 검증 |
+| 같은 동시 실행 수 비교 | macOS와 Windows x64에서 1·2·4개씩 측정. Windows ARM64·추가 호환성·실제 tray 메모리는 후속 검증 |
 | 파일 상태 검사 메모리 | macOS에서 작업 후 malloc 영역 잔류 확인. 실제 tray 측정·할당 패턴 개선 또는 해당 조회의 Git 명령 유지 비교 필요 |
 | git2 비교·라이브러리 삭제 | 미구현. Windows 결과나 남은 삭제 비용이 필요성을 보일 때 검토 |
 

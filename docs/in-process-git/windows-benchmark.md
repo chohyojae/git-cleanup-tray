@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 
-# Windows 성능 비교 계획
+# Windows 성능 비교 절차와 추가 계획
 
-Git 명령을 동시에 실행하는 방식과 멀티스레드 라이브러리 처리를 비교합니다. Windows 실측은 아직 하지 않았습니다. 이번 구현과 자동 테스트는 macOS에서 진행했습니다.
+Git 명령을 동시에 실행하는 방식과 라이브러리 처리를 비교합니다. 네 구성의 코어 Scan을 동시 실행 수 1·2·4개로 비교한 실측과 작업 후 메모리는 [2026-11-09 Windows x64 보고서](windows-results-2026-11-09.md)에 있습니다. 아래에는 재현 절차와 예제보다 큰 저장소·실제 UI·Windows ARM64에서 추가로 확인할 항목을 남겼습니다.
 
 ## 2026-11-08 동시 Git 실행 측정 (이전 결과)
 
@@ -15,7 +15,7 @@ macOS 27.2 Apple Silicon, Apple Git 2.54.0, release 빌드에서 준비 실행 5
 | 순차 Git 실행 | 971.83ms | 1021.58ms |
 | Git 명령 4개 저장소 동시 실행 | 273.30ms | 288.98ms |
 
-이 측정은 작은 저장소의 검사 시간만 확인한 것입니다. Windows 속도, 대형 저장소의 디스크 경합, 메모리, 라이브러리의 성능을 뜻하지 않습니다. macOS 라이브러리 비교는 새 보고서에 있고, 아래 Windows 검증은 아직 진행하지 않았습니다.
+이 이전 측정은 작은 저장소의 검사 시간만 확인한 것입니다. Windows 속도, 대형 저장소의 디스크 경합, 메모리, 라이브러리의 성능을 뜻하지 않습니다. 이후 라이브러리 비교는 각 플랫폼의 측정 보고서에 기록했습니다.
 
 ## 실행 조건을 맞춥니다
 
@@ -45,14 +45,50 @@ $env:GIT_CONFIG_GLOBAL = $benchmarkConfig.FullName
 $env:GIT_CONFIG_NOSYSTEM = "1"
 try {
     .\target\release\examples\scan_benchmark.exe --case all --warmups 5 --iterations 30 --output "$env:TEMP\git-read-benchmark.csv"
+    if ($LASTEXITCODE -ne 0) { throw '벤치마크가 실패했습니다.' }
 } finally {
     $env:GIT_CONFIG_GLOBAL = $benchmarkPreviousGlobal
     $env:GIT_CONFIG_NOSYSTEM = $benchmarkPreviousNoSystem
-    Remove-Item $benchmarkConfig.FullName
+    Remove-Item -LiteralPath $benchmarkConfig.FullName
 }
 ```
 
 `--parallelism 4`로 동시 실행 수를 고정할 수 있습니다. 아래 표는 이 예제보다 큰 저장소에서 추가 검증할 목표이며 현재 예제의 크기와 다릅니다.
+
+## 작업 후 메모리 재현
+
+[PowerShell 측정 스크립트](benchmarks/measure-windows-memory.ps1)는 매번 새 프로세스를 만들고 전역·시스템 Git 설정을 격리합니다. 준비 실행 5회 뒤 지정한 횟수만큼 Scan하고 임시 저장소·계획·작업 스레드를 해제한 신호를 기다립니다. 신호를 받은 뒤 5초 후 Private Bytes·Working Set·프로세스 전체의 peak Working Set·스레드 수를 읽고, 다음 5초 동안 대기 CPU 시간을 기록합니다. 앱이나 OS의 보안 설정은 바꾸지 않습니다.
+
+워크트리 구성은 예제가 만든 임시 저장소를 해제한 뒤 관측합니다. 파일 구성은 아래 준비 스크립트로 입력을 따로 만들어야 합니다. 측정 프로세스는 입력을 삭제하지 않으며 관측 후 정상 종료합니다. 두 실행이 끝나면 준비 스크립트가 절대 경로·임시 부모 폴더·전용 이름·소유 표식·reparse point 여부를 확인하고 PowerShell로 정리합니다.
+
+```powershell
+foreach ($backend in 'commands', 'gix') {
+    .\docs\in-process-git\benchmarks\measure-windows-memory.ps1 `
+        -Case worktrees -Backend $backend -Iterations 30 `
+        -OutputPrefix "target/windows-memory-worktrees-$backend-30"
+}
+```
+
+파일 구성의 50회 비교는 [준비 스크립트](benchmarks/prepare-windows-files.ps1)로 동일한 저장소를 한 번 만들고 재사용합니다. 저장소마다 데이터 파일 10,000개·이력 파일 1개, 커밋 3개, clean 연결 워크트리 1개를 Git으로 검증합니다. 새 측정 프로세스는 이 입력을 읽기만 하고 디렉터리를 소유하거나 삭제하지 않습니다. 두 진입점은 같은 Rust 측정 코드를 공유합니다.
+
+```powershell
+cargo build --release --example scan_memory_benchmark
+$manifest = 'target/windows-memory-files.shared.json'
+.\docs\in-process-git\benchmarks\prepare-windows-files.ps1 -Manifest $manifest
+try {
+    foreach ($backend in 'commands', 'gix') {
+        .\docs\in-process-git\benchmarks\measure-windows-memory.ps1 `
+            -Case files -Backend $backend -Iterations 50 -FixtureManifest $manifest `
+            -OutputPrefix "target/windows-memory-files-$backend-50"
+    }
+} finally {
+    .\docs\in-process-git\benchmarks\prepare-windows-files.ps1 -Manifest $manifest -Cleanup
+}
+```
+
+`--fixture-manifest`는 절대 경로 네 개의 JSON 배열을 받으며 files 구성에서만 허용합니다. 이 경로의 소유권을 가져오지 않는 테스트도 두 진입점에서 실행했습니다. Rust 예제에 명시하지 않으면 기존 임시 저장소 생성 경로를 유지하지만, PowerShell 메모리 수집기는 files 구성에서 `-FixtureManifest`를 필수로 받습니다.
+
+각 실행의 `.memory.csv`가 메모리·CPU 원본이며, `.csv`는 해당 메모리 측정 프로세스의 시간 표본입니다. `.stdout.txt`와 `.stderr.txt`도 남깁니다. 시간 비교용 전체 구성 측정과는 별도 실행입니다. peak Working Set은 프로세스 안에서 수행한 준비·계획 비교를 포함하고 Git 하위 프로세스의 메모리는 포함하지 않습니다. files 입력 생성은 별도 프로세스라 peak에서 제외합니다. Scan만의 최대 메모리나 실제 tray 앱의 idle 메모리로 해석하지 않습니다. 초기 files 30회는 다른 정리 절차를 사용했으므로 [실측 보고서](windows-results-2026-11-09.md)에 참고값으로 구분했습니다.
 
 ## 테스트 저장소
 
@@ -107,9 +143,9 @@ macOS 기존 참고값은 `AGENTS.md`의 트레이 대기 메모리 14.1MB입니
 - 대기 중 반복 확인이나 상주 작업 스레드로 CPU 사용이 늘지 않아야 합니다. 작업 후 메모리가 기준보다 `max(2MiB, 10%)` 이상 늘면 원인 해결 또는 설계 근거가 필요합니다.
 - 세 플랫폼에서 같은 안전 조건을 만족해야 합니다. Windows ARM64는 교차 빌드 성공만으로 실행 검증을 대신하지 않습니다.
 
-## 결과 기록 양식
+## 추가 측정 결과 기록 양식
 
-플랫폼·저장소 구성·동시 실행 수마다 표를 나누고 원본 표본과 추적 자료를 연결합니다.
+아래는 후속 범위를 위한 양식입니다. 완료한 Windows x64 코어 측정값은 별도 보고서에 있습니다. 플랫폼·저장소 구성·동시 실행 수마다 표를 나누고 원본 표본과 추적 자료를 연결합니다.
 
 | 항목 | 순차 Git 실행 | 동시 Git 실행 | `gix` 동시 처리 | `git2` 동시 처리 |
 |---|---|---|---|---|

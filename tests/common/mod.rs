@@ -86,10 +86,9 @@ impl Sandbox {
     #[must_use]
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("create temp dir");
-        // macOS의 `/var` 별칭 차이가 조회 결과 비교에 섞이지 않도록 실제 경로를 쓴다.
-        let root = dir
-            .path()
-            .canonicalize()
+        // macOS의 `/var` 별칭은 해소하되 Windows에서 `canonicalize()`가 붙이는
+        // `\\?\` 접두사는 피한다. Git for Windows의 `clone --bare`가 이 경로에서 실패한다.
+        let root = gix::path::realpath(dir.path())
             .expect("physical temporary path")
             .join("한글 sandbox 경로");
         std::fs::create_dir(&root).expect("create sandbox root");

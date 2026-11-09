@@ -1,0 +1,7 @@
+"case","backend","parallelism","iterations","private_bytes","working_set_bytes","peak_working_set_bytes","threads_after_work","observed_delay_ms","idle_cpu_ms","idle_window_ms","idle_cpu_one_core_percent","fixture_cleanup","cleanup_ms","after_scan_ms","comparison_scope","cleanup_before_sample","ready_signal_age_ms"
+"worktrees","commands","4","30","5308416","9826304","10002432","1","5092.6444","0","5015.3351","0","rust","0",,"paired-30",,
+"worktrees","gix","4","30","6332416","12083200","13139968","1","5049.3664","0","5005.7779","0","rust","0",,"paired-30",,
+"files","commands","4","30","4567040","8019968","9502720","1","5074.3956","0","5003.3239","0","powershell-assisted","51965.6944",,"reference-only",,
+"files","gix","4","30","11186176","12632064","38121472","1","5132.9382","0","5043.0251","0","manual-after-ready","0",,"additional-30","False","777895.2976"
+"files","commands","4","50","5013504","9826304","10354688","2","5014.9527","0","5008.9877","0","shared-fixture","0",,"paired-50",,
+"files","gix","4","50","10346496","13672448","39976960","4","5020.1938","0","5008.0389","0","shared-fixture","0",,"paired-50",,

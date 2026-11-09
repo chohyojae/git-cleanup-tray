@@ -55,6 +55,8 @@ struct Options {
     output: PathBuf,
     /// 메모리 측정을 위해 스레드 종료 뒤 일시 대기할 초. 기본 0.
     hold_seconds: u64,
+    /// 메모리 비교에서 외부에서 준비한 파일 구성의 네 저장소를 읽기 전용으로 재사용한다.
+    fixture_manifest: Option<PathBuf>,
 }
 
 impl Options {
@@ -68,6 +70,7 @@ impl Options {
             warmups: 5,
             output: std::env::temp_dir().join("git-read-benchmark.csv"),
             hold_seconds: 0,
+            fixture_manifest: None,
         };
         let mut args = std::env::args().skip(1);
         while let Some(key) = args.next() {
@@ -84,12 +87,14 @@ impl Options {
                 "--hold-seconds" => {
                     options.hold_seconds = value.parse().expect("hold seconds integer");
                 }
+                "--fixture-manifest" => options.fixture_manifest = Some(value.into()),
                 _ => panic!("unknown benchmark option: {key}"),
             }
         }
         assert!(options.iterations > 0);
         assert!(["all", "small", "refs", "worktrees", "files"].contains(&options.case.as_str()));
         assert!(["both", "commands", "gix"].contains(&options.backend.as_str()));
+        assert!(options.fixture_manifest.is_none() || options.case == "files");
         options
     }
 }
@@ -103,8 +108,21 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// 지정한 구성의 실제 Git 저장소를 만든다. 생성 시간은 측정에서 제외한다.
-    fn new(case: &str) -> Self {
+    /// 준비된 입력을 열거나 지정한 구성의 임시 Git 저장소를 만든다. 생성 시간은 제외한다.
+    fn new(case: &str, manifest: Option<&Path>) -> Self {
+        if let Some(manifest) = manifest {
+            let paths: Vec<PathBuf> = serde_json::from_slice(
+                &std::fs::read(manifest).expect("read prepared fixture manifest"),
+            )
+            .expect("prepared fixture path array");
+            assert_eq!(paths.len(), 4, "files fixture needs four repositories");
+            assert!(paths.iter().all(|path| path.is_absolute() && path.is_dir()));
+            // 입력 경로의 소유권은 가져오지 않는다. 외부 저장소를 drop 시 삭제하면 안 된다.
+            return Self {
+                _sandboxes: Vec::new(),
+                paths,
+            };
+        }
         if case == "worktrees" {
             let mut sandboxes = Vec::new();
             let mut paths = Vec::new();
@@ -198,21 +216,34 @@ fn make_files_and_worktree(sandbox: &Sandbox, path: &Path, index: usize) {
     sandbox.add_worktree(path, &format!("파일 검사 worktree {index}"), "완료");
 }
 
-/// 출력 순서와 모든 후보·제외 사유까지 비교해 일부 결과를 빠뜨린 구현을 걸러낸다.
-fn fingerprint(scans: &[RepositoryScan]) -> Vec<String> {
-    scans
-        .iter()
-        .map(|scan| {
-            let plan = scan.outcome.as_ref().expect("benchmark scan must succeed");
-            assert!(plan.errors.is_empty(), "{:?}", plan.errors);
-            format!("{plan:?}")
-        })
-        .collect()
+/// 출력 순서와 계획의 모든 필드를 비교한다. 조회 실패나 결과 차이가 있으면 중단한다.
+fn assert_same_plans(scans: &[RepositoryScan], expected: &[RepositoryScan]) {
+    assert_eq!(scans.len(), expected.len());
+    for (scan, expected) in scans.iter().zip(expected) {
+        assert_eq!(scan.repository_id, expected.repository_id);
+        let plan = scan.outcome.as_ref().expect("benchmark scan must succeed");
+        let expected = expected
+            .outcome
+            .as_ref()
+            .expect("reference scan must succeed");
+        assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+        assert!(expected.errors.is_empty(), "{:?}", expected.errors);
+        assert_eq!(plan.repository_id, expected.repository_id);
+        // Windows의 `/`와 `\`는 같은 경로 구분자다. Debug 문자열은 달라도
+        // `Path` 비교는 이를 같은 경로로 판정하며 후보 안의 경로에도 동일하게 적용된다.
+        assert_eq!(plan.repository_path, expected.repository_path);
+        assert_eq!(plan.toplevel, expected.toplevel);
+        assert_eq!(plan.base, expected.base);
+        assert_eq!(plan.worktrees, expected.worktrees);
+        assert_eq!(plan.branches, expected.branches);
+        assert_eq!(plan.custom_refs, expected.custom_refs);
+        assert_eq!(plan.skipped, expected.skipped);
+    }
 }
 
 /// 두 방식을 같은 스레드 수로 번갈아 실행하고 계획 일치 확인과 원본 표본 저장을 수행한다.
 fn benchmark(options: &Options, case: &str, csv: &mut impl std::io::Write) -> std::io::Result<()> {
-    let fixture = Fixture::new(case);
+    let fixture = Fixture::new(case, options.fixture_manifest.as_deref());
     let namespaces = default_namespaces();
     let requests: Vec<_> = fixture
         .paths
@@ -227,13 +258,7 @@ fn benchmark(options: &Options, case: &str, csv: &mut impl std::io::Write) -> st
     let native = InProcessGitRunner::new(command.clone());
     let readers: [(&str, &dyn GitRunner); 2] = [("commands", &command), ("gix", &native)];
     let cancel = CancellationToken::new();
-    let expected = fingerprint(&batch::scan_all_with_parallelism(
-        &command,
-        &requests,
-        &cancel,
-        1,
-        &mut |_| {},
-    ));
+    let expected = batch::scan_all_with_parallelism(&command, &requests, &cancel, 1, &mut |_| {});
     let parallelism = options
         .parallelism
         .map_or_else(|| vec![1, 2, 4], |limit| vec![limit.max(1)]);
@@ -256,7 +281,7 @@ fn benchmark(options: &Options, case: &str, csv: &mut impl std::io::Write) -> st
                 );
                 let elapsed = start.elapsed().as_secs_f64() * 1000.0;
                 let calls = command.calls.load(Ordering::Relaxed);
-                assert_eq!(fingerprint(&scans), expected, "{case} / {name} / {limit}");
+                assert_same_plans(&scans, &expected);
                 if iteration >= options.warmups {
                     writeln!(
                         csv,
@@ -287,8 +312,14 @@ fn benchmark(options: &Options, case: &str, csv: &mut impl std::io::Write) -> st
     Ok(())
 }
 
-/// 임시 저장소만 측정하고 요청한 경우에만 OS 메모리 측정을 위해 종료 직전에 대기한다.
-fn main() -> std::io::Result<()> {
+/// 임시 저장소나 명시한 읽기 전용 fixture를 측정하고 필요할 때 종료 직전에 대기한다.
+///
+/// # Errors
+/// 결과 CSV를 만들거나 기록하지 못하면 I/O 오류를 반환한다.
+///
+/// # Panics
+/// 인자·fixture 생성·manifest 읽기에 실패하거나 두 조회 결과가 다르면 중단한다.
+pub(crate) fn main() -> std::io::Result<()> {
     let options = Options::parse();
     let mut csv = std::io::BufWriter::new(std::fs::File::create(&options.output)?);
     writeln!(
@@ -310,4 +341,44 @@ fn main() -> std::io::Result<()> {
         std::thread::sleep(Duration::from_secs(options.hold_seconds));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! 재사용 입력을 읽어도 해당 디렉터리의 소유권을 가져오지 않는지 확인한다.
+
+    use super::Fixture;
+
+    /// 외부에서 준비한 입력은 측정용 객체를 버린 뒤에도 삭제되면 안 된다.
+    #[test]
+    fn prepared_fixture_does_not_remove_input_directories() {
+        let temporary = tempfile::tempdir().expect("test fixture directory");
+        let paths: Vec<_> = (0..4)
+            .map(|index| temporary.path().join(format!("준비된 저장소 {index}")))
+            .collect();
+        for path in &paths {
+            std::fs::create_dir(path).expect("prepared directory");
+        }
+        let manifest = temporary.path().join("경로 manifest.json");
+        std::fs::write(&manifest, serde_json::to_vec(&paths).expect("path array"))
+            .expect("manifest");
+        let fixture = Fixture::new("files", Some(&manifest));
+        assert_eq!(fixture.paths, paths);
+        drop(fixture);
+        assert!(paths.iter().all(|path| path.is_dir()));
+    }
+
+    /// 구성과 다른 저장소 수를 조용히 비교하면 결과가 왜곡되므로 거부한다.
+    #[test]
+    #[should_panic(expected = "files fixture needs four repositories")]
+    fn prepared_fixture_rejects_wrong_repository_count() {
+        let temporary = tempfile::tempdir().expect("test fixture directory");
+        let manifest = temporary.path().join("잘못된 경로 manifest.json");
+        std::fs::write(
+            &manifest,
+            serde_json::to_vec(&[temporary.path()]).expect("path array"),
+        )
+        .expect("manifest");
+        let _fixture = Fixture::new("files", Some(&manifest));
+    }
 }
