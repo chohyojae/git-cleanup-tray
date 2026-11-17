@@ -73,6 +73,15 @@ impl<R: GitRunner> GitRunner for InProcessGitRunner<R> {
     fn run(&self, path: &Path, args: &[&OsStr]) -> Result<GitOutput> {
         self.process.run(path, args)
     }
+
+    /// 사용자 승인 전용 강제 삭제도 변경을 맡은 runner에 그대로 넘긴다.
+    fn run_approved(
+        &self,
+        path: &Path,
+        command: crate::git::guard::UserApprovedForce<'_>,
+    ) -> Result<GitOutput> {
+        self.process.run_approved(path, command)
+    }
 }
 
 /// 한 번의 읽기 작업에서만 사용하는 저장소 객체. plan이나 UI 상태에 저장하지 않는다.

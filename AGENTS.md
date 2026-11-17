@@ -130,11 +130,12 @@ PLAN 8, 15, 24장의 요약. 이 규칙을 약화하는 변경은 하지 않는�
 - 로컬 조회는 `GitRunner::open_read`가 제공하는 `git::read::GitReadRepository`만 사용한다. 기본은 `gix`이며 raw 저장소·ref store·쓰기 API를 `git/` 밖에 노출하지 않는다. Custom Git, `GIT_DIR` 지정, 미검증 필터·fsmonitor·sparse·partial clone·grafts·ref 저장 방식·비표준 upstream 설정은 Git 명령 조회로 처리한다. 권한·손상 오류를 fallback이나 변경 없음으로 숨기지 않는다.
 - shell command string을 만들지 않는다. executable과 argument를 분리해서 넘기고, branch 이름·path 앞에는 `--`를 둔다.
 - `git::guard`가 `branch -D/-f/--force`, `branch -r`, `worktree remove --force`, `push`, `reset`, `clean`, `stash`, `refs/remote/*` 밖이거나 `--no-deref` 없는 `update-ref -d`를 차단한다. Git은 long option 앞부분(`--forc`)도 받아들이므로 guard도 앞부분 일치로 판별한다. guard를 우회하거나 완화하지 않는다.
-- force 삭제, remote branch 삭제, 자동 stash, worktree 폴더 직접 삭제 기능을 만들지 않는다. `.git` 내부 파일을 직접 수정하지 않는다.
+- 강제 삭제의 유일한 예외는 사용자가 Clean 확인 창에서 항목별로 직접 체크한 dirty worktree와 merge되지 않은 branch다 (PLAN 8.5, 2026-11-17 사용자 결정). `git worktree remove --force -- <path>`와 `git branch -D -- <branch>` 두 형태만 `guard::UserApprovedForce` → `GitRunner::run_approved`로 내보낸다. 이 경로를 executor의 `approved_force` 처리 밖에서 쓰지 않고, 형태를 늘리지 않는다. 주기 정리와 확인을 끈 Clean All은 `approved_force`를 채우지 않는다.
+- 그 밖의 force 삭제, remote branch 삭제, 자동 stash, worktree 폴더 직접 삭제 기능을 만들지 않는다. `.git` 내부 파일을 직접 수정하지 않는다.
 - `refs/remote/*`(정리 대상)와 `refs/remotes/*`(절대 정리 안 함) 판별은 `git::refs`의 함수만 쓴다. 문자열 `starts_with`를 여기저기 새로 쓰지 않는다.
 - base branch 이름을 추측하지 않는다 (`main`/`master` 하드코딩 금지).
 - planner는 아무것도 바꾸지 않는다. executor는 mutation 직전에 대상마다 상태를 다시 확인하고, 바뀌었으면 `SkipReason::StateChanged`로 넘긴다.
-- 정리는 dirty, locked, main worktree를 건드리지 않는다. 최신화는 dirty/locked worktree를 건드리지 않고, clean main worktree는 `merge --ff-only --no-autostash`로 갱신할 수 있다.
+- 정리는 locked, main worktree를 건드리지 않는다. dirty worktree와 merge되지 않은 branch는 사용자가 확인 창에서 직접 고른 것만 지우고, 고르지 않으면 건드리지 않는다. 최신화는 dirty/locked worktree를 건드리지 않고, clean main worktree는 `merge --ff-only --no-autostash`로 갱신할 수 있다.
 - Phase 2(safety test)가 끝나기 전에는 UI의 Clean 버튼을 executor에 연결하지 않는다.
 
 ## 7. 테스트
@@ -142,7 +143,7 @@ PLAN 8, 15, 24장의 요약. 이 규칙을 약화하는 변경은 하지 않는�
 - 순수 parsing·판정 로직은 같은 파일의 `#[cfg(test)] mod tests`에 unit test를 둔다.
 - Git 동작은 `tests/`에서 `tempfile`로 실제 임시 저장소를 만들어 검증한다. mock만으로 끝내지 않는다.
 - 모든 Git 관련 test에 공백·한글 경로 케이스를 최소 하나 포함한다.
-- 안전 불변조건을 건드리는 변경은 `tests/destructive_guards.rs` 또는 race-condition test(Scan 후 Execute 전에 상태 변경)를 함께 추가한다.
+- 안전 불변조건을 건드리는 변경은 `tests/destructive_guards.rs` 또는 race-condition test(Scan 후 Execute 전에 상태 변경)를 함께 추가한다. 사용자가 고른 강제 삭제는 `tests/force_cleanup.rs`에서 검증한다.
 - test는 사용자의 실제 저장소나 전역 Git 설정을 건드리지 않는다. 필요하면 `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_NOSYSTEM`으로 격리한다.
 
 ## 8. 플랫폼

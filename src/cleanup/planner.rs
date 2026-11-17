@@ -14,7 +14,8 @@ use std::path::Path;
 
 use crate::cleanup::CleanupPlan;
 use crate::cleanup::candidate::{
-    BranchCandidate, CustomRefCandidate, SkipReason, SkippedItem, TargetKind, WorktreeCandidate,
+    BranchCandidate, CustomRefCandidate, ForceCandidate, ForceRisk, SkipReason, SkippedItem,
+    TargetKind, WorktreeCandidate,
 };
 use crate::error::Result;
 use crate::git::default_branch::{self, BaseBranchQuery};
@@ -105,6 +106,8 @@ impl<'r, R: GitRunner + ?Sized> CleanupPlanner<'r, R> {
             worktrees: Vec::new(),
             branches: Vec::new(),
             custom_refs: Vec::new(),
+            force_candidates: Vec::new(),
+            approved_force: Vec::new(),
             skipped: Vec::new(),
             errors: Vec::new(),
         };
@@ -125,6 +128,10 @@ impl<'r, R: GitRunner + ?Sized> CleanupPlanner<'r, R> {
     ///
     /// 검사 순서는 "싼 판정 먼저": 이름 규칙 → object 종류 → merge 여부 → worktree 상태.
     /// `git status`는 merge된 branch의 linked worktree에만 실행한다.
+    ///
+    /// merge되지 않은 branch와 dirty worktree는 지금처럼 제외 항목으로 남기되, 사용자가 확인 창에서
+    /// 직접 고를 수 있도록 `force_candidates`에도 올린다. 보호 branch, main·등록·lock된 worktree,
+    /// 경로가 사라진 worktree는 강제 삭제 후보로도 올리지 않는다.
     fn classify_branch(
         &self,
         plan: &mut CleanupPlan,
@@ -156,7 +163,18 @@ impl<'r, R: GitRunner + ?Sized> CleanupPlanner<'r, R> {
             return skip(plan, SkipReason::NotACommit);
         }
         if !is_merged {
-            return skip(plan, SkipReason::NotMerged);
+            skip(plan, SkipReason::NotMerged);
+            // 작업 중인 worktree가 많아도 Scan 비용이 늘지 않도록 `git status`는 실행하지 않는다.
+            // 고르면 worktree를 변경 여부와 관계없이 함께 제거한다고 확인 창에서 알린다.
+            if worktree.is_none_or(|entry| force_removable(entry, &plan.toplevel)) {
+                plan.force_candidates.push(ForceCandidate {
+                    branch: branch.to_owned(),
+                    commit: entry.target.clone(),
+                    worktree: worktree.map(|entry| entry.path.clone()),
+                    risk: ForceRisk::NotMerged,
+                });
+            }
+            return;
         }
 
         let Some(worktree) = worktree else {
@@ -187,6 +205,14 @@ impl<'r, R: GitRunner + ?Sized> CleanupPlanner<'r, R> {
                 }
             }
         };
+        if reason == Some(SkipReason::DirtyWorktree) {
+            plan.force_candidates.push(ForceCandidate {
+                branch: branch.to_owned(),
+                commit: entry.target.clone(),
+                worktree: Some(worktree.path.clone()),
+                risk: ForceRisk::DirtyWorktree,
+            });
+        }
         match reason {
             Some(reason) => plan.skipped.push(SkippedItem::new(
                 TargetKind::Worktree,
@@ -200,6 +226,18 @@ impl<'r, R: GitRunner + ?Sized> CleanupPlanner<'r, R> {
             }),
         }
     }
+}
+
+/// 사용자가 골랐을 때 강제로 제거해도 되는 linked worktree면 `true`.
+///
+/// main worktree, 앱에 등록한 경로, lock된 worktree, 경로가 사라진 worktree는 사용자가 골라도
+/// 건드리지 않는다. executor가 삭제 직전에 같은 조건을 다시 확인한다.
+fn force_removable(worktree: &WorktreeEntry, toplevel: &Path) -> bool {
+    !worktree.is_main
+        && worktree.locked.is_none()
+        && worktree.prunable.is_none()
+        && worktree.path.is_dir()
+        && !super::same_path(&worktree.path, toplevel)
 }
 
 /// custom ref 하나를 후보 또는 제외 항목으로 분류해 `plan`에 넣는다.

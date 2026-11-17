@@ -4,8 +4,12 @@
 //!
 //! planner/executor에 버그가 있더라도 금지 명령이 실제 process로 나가지 않도록 runner 직전에서
 //! 한 번 더 막는 마지막 방어선이다. 이 module의 규칙은 설정으로 끌 수 없다.
+//!
+//! 예외는 [`UserApprovedForce`] 하나뿐이다. 사용자가 Clean 확인 창에서 항목을 직접 체크했을 때만
+//! executor가 만들며, 인자 목록을 받는 [`check_forbidden`] 경로로는 여전히 강제 삭제를 보낼 수 없다.
 
 use std::ffi::OsStr;
+use std::path::Path;
 
 use crate::error::{CleanupError, Result};
 use crate::git::refs;
@@ -18,6 +22,50 @@ const GLOBAL_OPTIONS_WITH_VALUE: [&str; 4] = ["-C", "-c", "--git-dir", "--work-t
 /// `push`(remote branch 삭제 포함), `reset`, `clean`, `stash`(자동 stash 금지)는 정리 작업에
 /// 필요하지 않으므로 option과 관계없이 통째로 막는다.
 const FORBIDDEN_SUBCOMMANDS: [&str; 4] = ["push", "reset", "clean", "stash"];
+
+/// 사용자가 Clean 확인 창에서 항목별로 직접 고른 경우에만 실행하는 강제 삭제 명령 (PLAN 24장).
+///
+/// 임의의 인자 목록이 아니라 정해진 두 형태만 표현한다. 대상은 항상 `--` 뒤에 두므로 이름이나 경로가
+/// option으로 해석되지 않는다. `--force`는 한 번만 쓰므로 Git이 lock된 worktree 제거는 계속 거부한다.
+/// 주기 정리와 확인 없는 Clean All은 이 타입을 만들지 않는다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserApprovedForce<'a> {
+    /// `git worktree remove --force -- <path>`. 커밋하지 않은 변경과 함께 linked worktree를 제거한다.
+    RemoveWorktree(&'a Path),
+    /// `git branch -D -- <name>`. base에 merge되지 않은 local branch를 삭제한다.
+    DeleteBranch(&'a str),
+}
+
+impl<'a> UserApprovedForce<'a> {
+    /// 실행할 Git 인자. 형태가 고정되어 있어 호출자가 option을 끼워 넣을 수 없다.
+    #[must_use]
+    pub fn args(&self) -> Vec<&'a OsStr> {
+        match *self {
+            Self::RemoveWorktree(path) => vec![
+                OsStr::new("worktree"),
+                OsStr::new("remove"),
+                OsStr::new("--force"),
+                OsStr::new("--"),
+                path.as_os_str(),
+            ],
+            Self::DeleteBranch(name) => vec![
+                OsStr::new("branch"),
+                OsStr::new("-D"),
+                OsStr::new("--"),
+                OsStr::new(name),
+            ],
+        }
+    }
+
+    /// 로그와 오류 메시지에 쓰는 subcommand 이름.
+    #[must_use]
+    pub fn subcommand(&self) -> &'static str {
+        match self {
+            Self::RemoveWorktree(_) => "worktree",
+            Self::DeleteBranch(_) => "branch",
+        }
+    }
+}
 
 /// git 인자 목록에서 global option을 건너뛴 첫 subcommand를 찾는다.
 #[must_use]
@@ -39,7 +87,8 @@ pub fn subcommand<'a>(args: &[&'a OsStr]) -> Option<&'a OsStr> {
 ///
 /// 차단 대상:
 /// - `push`, `reset`, `clean`, `stash` 전체
-/// - `branch`의 강제 삭제 (`-D`, `-f`, `--force`, `-dD` 같은 short option 묶음 포함)
+/// - `branch`의 강제 삭제 (`-D`, `-f`, `--force`, `-dD` 같은 short option 묶음 포함).
+///   사용자가 직접 고른 대상은 이 함수가 아니라 [`UserApprovedForce`] 경로로만 나간다
 /// - `branch -r`/`--remotes` (`branch -d -r`는 `refs/remotes/*`를 지운다)
 /// - `worktree remove --force` / `-f`
 /// - `update-ref -d`로 `refs/remote/*` 밖의 ref를 지우거나, `--no-deref` 없이 지우는 경우
@@ -186,6 +235,24 @@ mod tests {
         assert!(check(&["worktree", "remove", "-f", "/tmp/wt"]).is_err());
         assert!(check(&["worktree", "remove", "--forc", "/tmp/wt"]).is_err());
         assert!(check(&["worktree", "remove", "-ff", "/tmp/wt"]).is_err());
+    }
+
+    /// 사용자 승인 전용 명령은 정해진 형태만 만들고, 같은 인자를 일반 경로로 보내면 여전히 막힌다.
+    #[test]
+    fn approved_force_has_fixed_shape_and_stays_blocked_on_the_normal_path() {
+        let worktree = UserApprovedForce::RemoveWorktree(Path::new("/tmp/한글 wt"));
+        assert_eq!(
+            worktree.args(),
+            ["worktree", "remove", "--force", "--", "/tmp/한글 wt"].map(OsStr::new)
+        );
+        // option처럼 보이는 이름도 `--` 뒤에 놓인다.
+        let branch = UserApprovedForce::DeleteBranch("--force");
+        assert_eq!(
+            branch.args(),
+            ["branch", "-D", "--", "--force"].map(OsStr::new)
+        );
+        assert!(check_forbidden(&worktree.args()).is_err());
+        assert!(check_forbidden(&branch.args()).is_err());
     }
 
     /// 정리에 필요 없는 위험 subcommand는 통째로 막는다.

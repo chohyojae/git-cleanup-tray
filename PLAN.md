@@ -307,7 +307,7 @@ git merge-base --is-ancestor <candidate-ref> <base-ref>
 git branch -d -- <branch>
 ```
 
-다음 명령은 사용하지 않는다.
+다음 명령은 자동으로는 사용하지 않는다. 사용자가 확인 창에서 직접 고른 branch에만 쓴다 (8.5).
 
 ```text
 git branch -D
@@ -350,12 +350,13 @@ git -C <worktree> status --porcelain --untracked-files=normal
 다음은 금지한다.
 
 ```text
-git worktree remove --force
 git reset --hard
 git clean -fd
 자동 stash
 OS API를 이용한 worktree directory 강제 삭제
 ```
+
+`git worktree remove --force`는 자동으로는 실행하지 않는다. 사용자가 확인 창에서 직접 고른 worktree에만 쓴다 (8.5).
 
 처리 마지막에는:
 
@@ -402,6 +403,28 @@ remote repository의 실제 branch
 base branch
 사용자 보호 branch/ref
 ```
+
+### 8.5 사용자가 직접 고른 강제 삭제 (2026-11-17 추가)
+
+dirty worktree와 merge되지 않은 branch는 기본 정리 대상이 아니다. Clean 확인 창의 체크박스 목록에
+체크하지 않은 상태로 보여주고, 사용자가 항목을 직접 체크했을 때만 지운다.
+
+| 대상 | 잃는 것 | 삭제 방법 |
+|---|---|---|
+| merge된 branch의 dirty linked worktree | 커밋하지 않은 변경 | `git worktree remove --force -- <path>` → `git branch -d -- <branch>` |
+| merge되지 않은 branch (worktree 없음) | merge되지 않은 commit | `git branch -D -- <branch>` |
+| merge되지 않은 branch의 linked worktree | commit과 커밋하지 않은 변경 | `git worktree remove --force -- <path>` → `git branch -D -- <branch>` |
+
+- 확인 창을 거치지 않는 경로(주기 정리, 확인을 끈 Clean All)에서는 절대 실행하지 않는다.
+- 사용자가 골라도 지우지 않는다: base branch, 보호 branch, main worktree, 앱에 등록한 경로의 worktree,
+  lock된 worktree, 경로가 사라진 worktree, main worktree에 checkout된 branch. merge되지 않은 custom ref도 대상이 아니다.
+- `--force`는 한 번만 쓴다. Git은 lock된 worktree 제거를 계속 거부한다.
+- 실행 직전에 다시 확인한다. branch가 Scan 때와 다른 commit을 가리키거나 worktree 연결이 바뀌었으면
+  사용자가 확인한 것과 다른 대상이므로 지우지 않고 `StateChanged`로 남긴다.
+- merge되지 않은 branch의 worktree에는 Scan 비용을 늘리지 않도록 `git status`를 실행하지 않는다.
+  확인 창 문구로 "커밋하지 않은 변경도 함께 사라진다"고 알린다.
+- 두 강제 명령은 `git::guard::UserApprovedForce`가 만든 고정 형태로만, `GitRunner::run_approved`로만 나간다.
+  인자 목록을 받는 일반 경로(`GitRunner::run`)의 guard는 그대로 두 명령을 차단한다.
 
 ---
 
@@ -563,7 +586,14 @@ MVP에서는 병렬 cleanup을 사용하지 않는다.
 
 ## 13. Cleanup 확인 Dialog
 
-삭제 전 최소 다음을 보여준다.
+정리할 항목을 저장소 순서대로 체크박스 목록으로 보여주고, 체크한 항목만 정리한다 (2026-11-17 변경).
+
+- 안전한 항목(clean worktree, merge된 branch, merge된 custom ref)은 체크한 상태로 시작한다.
+- 지우면 작업을 잃는 항목(8.5)은 `Loses work` 표시와 잃는 내용을 적은 문구를 붙이고 체크하지 않은 상태로 시작한다.
+- 그런 항목을 하나라도 체크하면 되돌릴 수 없다는 경고를 보여준다.
+- 안전한 항목이 없어도 고를 수 있는 항목이 있으면 확인 창을 띄운다. 아무것도 체크하지 않으면 실행 버튼을 누를 수 없다.
+
+숫자는 체크 상태를 따라 바뀌며 최소 다음을 보여준다.
 
 ```text
 Repositories       4
@@ -576,8 +606,8 @@ Skipped             1
 그리고 다음 문구를 명확히 표시한다.
 
 ```text
-Remote branches will not be deleted.
-Worktrees with uncommitted or untracked files will be skipped.
+Only checked items are cleaned. Remote branches will not be deleted.
+Items marked "Loses work" have uncommitted changes or unmerged commits and are unchecked by default.
 ```
 
 Primary action은 의미가 명확하도록:
@@ -662,7 +692,8 @@ Disable force branch deletion
 Disable remote branch deletion
 ```
 
-이 세 정책은 configurable option이 아니라 application invariant로 둔다.
+이 세 정책은 configurable option이 아니라 application invariant로 둔다. 앞의 두 가지를 끄는 설정은 없으며,
+예외는 사용자가 확인 창에서 항목별로 직접 고르는 경우(8.5)뿐이다.
 
 ---
 
@@ -964,12 +995,19 @@ remote URL을 로그에 남겨야 한다면 credential을 마스킹한다.
 ### 절대 수행하지 않음
 
 ```text
-git branch -D
-git worktree remove --force
 git reset --hard
 git clean -fd
 git push --delete
 ```
+
+### 사용자가 확인 창에서 직접 고른 대상에만 수행 (8.5)
+
+```text
+git branch -D
+git worktree remove --force
+```
+
+자동 실행 경로(주기 정리, 확인을 끈 Clean All)와 사용자가 체크하지 않은 대상에는 절대 수행하지 않는다.
 
 ### 절대 삭제하지 않음
 
@@ -977,9 +1015,9 @@ git push --delete
 base branch
 refs/remotes/*
 remote repository branch
-dirty worktree
 locked worktree
 현재 main worktree
+사용자가 고르지 않은 dirty worktree와 merge되지 않은 branch
 ```
 
 ### 반드시 수행
@@ -1075,6 +1113,9 @@ push --delete
 reset --hard
 clean -fd
 ```
+
+`branch -D`와 `worktree remove --force`는 사용자가 고른 대상이 있을 때 승인 전용 경로로만, 고른 대상에
+대해서만 나가는지도 함께 검사한다 (8.5).
 
 ---
 
@@ -1278,7 +1319,7 @@ GUI 없이 integration test만으로 실제 임시 repository cleanup을 검증�
 - Scan All/Clean All이 동작한다.
 - merged local branch를 안전하게 삭제한다.
 - clean linked worktree를 먼저 제거하고 branch를 삭제한다.
-- dirty/locked worktree는 skip한다.
+- locked worktree는 skip한다. dirty worktree와 merge되지 않은 branch는 사용자가 확인 창에서 고른 것만 지운다.
 - merged `refs/remote/*` custom ref를 삭제한다.
 - `refs/remotes/*`는 삭제하지 않는다.
 - remote branch는 삭제하지 않는다.
@@ -1300,7 +1341,7 @@ Claude Code가 이 문서를 기반으로 구현할 때 다음 규칙을 따른�
 5. CleanupPlan과 CleanupExecutor를 분리한다.
 6. 모든 destructive operation 직전에 최신 Git 상태를 재검증한다.
 7. dirty 또는 locked worktree를 자동 변경하지 않는다.
-8. force deletion 기능을 만들지 않는다.
+8. force deletion은 사용자가 확인 창에서 항목별로 직접 고른 경우(8.5)에만 수행한다. 그 밖의 force 기능은 만들지 않는다.
 9. remote branch deletion 기능을 만들지 않는다.
 10. `refs/remotes/*`를 cleanup namespace로 취급하지 않는다.
 11. `refs/remote/*`와 `refs/remotes/*`를 코드와 test에서 명확하게 구분한다.
@@ -1330,7 +1371,7 @@ Electron        사용하지 않음
 Base Branch     remote default branch 자동 판별
 Custom Ref      refs/remote/*
 Remote Branch   삭제하지 않음
-Dirty Worktree  삭제하지 않음
+Dirty Worktree  자동으로는 삭제하지 않음. 확인 창에서 직접 고른 것만 삭제 (8.5)
 License         GPL-3.0-only
 ```
 
@@ -1547,7 +1588,7 @@ tray에서 지속적으로 접근
    본 도구는 하루 종일 실행되는 작은 utility이므로 일반 Git desktop client와 lifecycle이 다르다.
 
 4. **cleanup safety policy가 제품의 핵심이다.**
-   remote branch 삭제, force removal 등의 기능을 지원하지 않는 좁은 정책이 의도적인 차별점이다.
+   remote branch 삭제를 지원하지 않고, force removal은 사용자가 항목별로 직접 고른 경우에만 수행하는 좁은 정책이 의도적인 차별점이다.
 
 5. **AI agent custom ref가 별도 요구사항이다.**
    `refs/remote/*` 같은 임시 namespace를 일반 Git GUI가 UI에 노출하거나 정리하는 경우는 확인하지 못했다.

@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! Scan       : 저장소별 worker(설정 로드 → Scan) → 완료한 저장소의 요약 갱신
-//! Clean      : worker(Scan) → 확인 dialog → worker(순차 Execute + 이력 저장) → 결과 표시
+//! Clean      : worker(Scan) → 확인 dialog(체크한 항목만 남김) → worker(순차 Execute + 이력 저장) → 결과 표시
 //! 목록 변경   : worker(repositories.json 읽기 → 변경 → 저장) → 목록 갱신
 //! ```
 //!
@@ -19,6 +19,7 @@ pub mod maintenance;
 pub mod registration;
 mod scans;
 mod schedule;
+pub mod selection;
 pub mod state;
 pub mod tasks;
 pub mod text;
@@ -588,21 +589,60 @@ impl App {
             return;
         }
         let counts = windows::DialogCounts::from(report.totals);
-        if report.totals.removable() == 0 {
+        let confirm = report.confirm_clean_all || matches!(purpose, ScanPurpose::Clean(_));
+        // 강제 삭제 후보는 확인 창에서 직접 골라야만 지운다. 확인 없이 실행할 때는 없는 것과 같다.
+        let selectable = if confirm {
+            selection::selectable_count(&report.pending)
+        } else {
+            report.totals.removable()
+        };
+        if selectable == 0 {
             // 사용자가 Clean을 눌렀으니 지울 것이 없다는 것도 창으로 알려준다.
             self.show_cleanup_stage(DialogStage::Done, &summary, &counts, &report.problems);
             self.set_status(status);
             return;
         }
-        let heading = format!("Clean up {} items?", report.totals.removable());
         *self.pending.borrow_mut() = Some(report.pending);
-        let confirm = report.confirm_clean_all || matches!(purpose, ScanPurpose::Clean(_));
         if confirm {
-            self.show_cleanup_stage(DialogStage::Confirm, &heading, &counts, &report.problems);
+            let heading = if report.totals.removable() == 0 {
+                "Nothing is safe to clean automatically"
+            } else {
+                "Select items to clean up"
+            };
+            self.show_cleanup_selection(heading, &counts, &report.problems);
             self.set_status(status);
         } else {
             self.start_cleanup();
         }
+    }
+
+    /// 확인 창에서 체크한 항목만 계획에 남기고 실행을 시작한다.
+    ///
+    /// 화면 줄 수와 계획 항목 수가 어긋나면 어떤 항목이 선택됐는지 믿을 수 없으므로 실행하지 않는다.
+    fn confirm_cleanup(&self) {
+        let Some(checked) = self.cleanup_selection() else {
+            return;
+        };
+        let applied = self
+            .pending
+            .borrow_mut()
+            .as_mut()
+            .is_some_and(|pending| selection::apply(pending, &checked));
+        if !applied {
+            log::error!("cleanup selection does not match the pending plan; nothing was run");
+            return;
+        }
+        let nothing_selected = self
+            .pending
+            .borrow()
+            .as_ref()
+            .is_none_or(|pending| pending.plans.is_empty());
+        if nothing_selected {
+            // 버튼이 비활성이라 보통 오지 않는다. 고른 것이 없으면 취소와 같다.
+            self.dismiss_cleanup_dialog(true);
+            return;
+        }
+        self.start_cleanup();
     }
 
     /// 확인을 기다리던 계획을 background에서 실행한다.
@@ -621,6 +661,8 @@ impl App {
             if let Some(dialog) = self.cleanup_dialog.borrow().as_ref() {
                 dialog.set_progress("".into());
                 dialog.set_stage(DialogStage::Running);
+                // 실행을 시작하면 선택 목록은 더 쓰지 않는다. 결과를 기다리는 동안 들고 있지 않는다.
+                dialog.set_items(slint::ModelRc::default());
             }
             self.set_status(TrayStatus::CleaningUp);
         } else {

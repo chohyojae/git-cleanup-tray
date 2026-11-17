@@ -83,6 +83,28 @@ pub trait GitRunner: Send + Sync {
     /// guard가 차단한 명령이면 [`CleanupError::ForbiddenCommand`], `git` 실행 파일이 없으면
     /// [`CleanupError::GitNotFound`], 그 밖의 process 생성 실패는 해당 I/O 오류를 반환한다.
     fn run(&self, repository: &Path, args: &[&OsStr]) -> Result<GitOutput>;
+
+    /// 사용자가 Clean 확인 창에서 직접 고른 대상의 강제 삭제를 실행한다 (PLAN 24장).
+    ///
+    /// [`GitRunner::run`]과 달리 guard를 거치지 않으므로 [`guard::UserApprovedForce`]가 표현하는 두 형태만
+    /// 받는다. 기본 구현은 거부한다. 실제 삭제를 맡는 runner만 override하므로, 이 경로를 모르는
+    /// runner를 끼워도 강제 삭제가 나가지 않는다.
+    ///
+    /// # Errors
+    ///
+    /// 기본 구현은 항상 [`CleanupError::ForbiddenCommand`]. override한 구현은 [`GitRunner::run`]과 같은
+    /// process 실행 오류를 반환한다.
+    fn run_approved(
+        &self,
+        repository: &Path,
+        command: guard::UserApprovedForce<'_>,
+    ) -> Result<GitOutput> {
+        let _ = repository;
+        Err(CleanupError::ForbiddenCommand(format!(
+            "{} (forced) is not supported by this runner",
+            command.subcommand()
+        )))
+    }
 }
 
 /// 설치된 `git` 실행 파일을 child process로 실행하는 기본 구현.
@@ -119,7 +141,25 @@ impl GitRunner for ProcessGitRunner {
     /// guard 검사 후 `git -C <repository> <args>`를 실행하고 종료까지 기다린다.
     fn run(&self, repository: &Path, args: &[&OsStr]) -> Result<GitOutput> {
         guard::check_forbidden(args)?;
+        self.spawn(repository, args)
+    }
 
+    /// 사용자 승인 전용 강제 삭제를 실행한다. 인자는 [`guard::UserApprovedForce`]가 만든 것만 쓴다.
+    fn run_approved(
+        &self,
+        repository: &Path,
+        command: guard::UserApprovedForce<'_>,
+    ) -> Result<GitOutput> {
+        log::info!("user-approved forced {}", command.subcommand());
+        self.spawn(repository, &command.args())
+    }
+}
+
+impl ProcessGitRunner {
+    /// `git -C <repository> <args>`를 실행하고 종료까지 기다린다. guard 검사는 호출자가 한다.
+    ///
+    /// private으로 두어 guard를 거치지 않는 실행이 [`GitRunner::run_approved`] 한 곳에서만 나가게 한다.
+    fn spawn(&self, repository: &Path, args: &[&OsStr]) -> Result<GitOutput> {
         let mut command = Command::new(&self.executable);
         // current_dir 대신 `-C`를 쓴다. 저장소 경로가 사라졌을 때 spawn 오류(NotFound)가 나면
         // git 미설치와 구분할 수 없지만, `-C`면 git이 자체 오류 메시지로 알려준다.

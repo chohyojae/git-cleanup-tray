@@ -20,6 +20,18 @@ export struct RepositoryRowData {
     scan-pending: bool,
 }
 
+// Clean 확인 창 체크박스 목록의 한 줄 (PLAN 13장).
+export struct CleanupItem {
+    // 종류와 대상 이름 ("Worktree + branch: feature/x").
+    title: string,
+    // 저장소 이름, 지워도 되는 이유 또는 잃는 것, worktree 경로.
+    note: string,
+    // 지우면 커밋하지 않은 변경이나 merge되지 않은 commit을 잃는 항목.
+    risky: bool,
+    // 체크한 항목만 정리한다.
+    checked: bool,
+}
+
 // 상세 화면 항목 하나 (PLAN 14장).
 export struct DetailItem {
     // 주 이름 (branch, ref, worktree branch, 오류 메시지).

@@ -16,6 +16,7 @@ use common::{Sandbox, default_namespaces, request};
 use git_cleanup_tray::cleanup::executor::CleanupExecutor;
 use git_cleanup_tray::cleanup::planner::CleanupPlanner;
 use git_cleanup_tray::error::{CleanupError, Result};
+use git_cleanup_tray::git::guard::UserApprovedForce;
 use git_cleanup_tray::git::runner::{GitOutput, GitRunner, ProcessGitRunner};
 
 /// 문자열 slice를 runner 인자 형식으로 바꾼다.
@@ -95,6 +96,19 @@ struct RecordingRunner {
     inner: ProcessGitRunner,
     /// 실행 순서대로 기록한 인자 목록.
     calls: Mutex<Vec<Vec<String>>>,
+    /// 사용자 승인 전용 경로로 나간 강제 삭제 명령의 인자 목록.
+    approved: Mutex<Vec<Vec<String>>>,
+}
+
+impl RecordingRunner {
+    /// 아무것도 기록하지 않은 runner.
+    fn new() -> Self {
+        Self {
+            inner: ProcessGitRunner::new(),
+            calls: Mutex::new(Vec::new()),
+            approved: Mutex::new(Vec::new()),
+        }
+    }
 }
 
 impl GitRunner for RecordingRunner {
@@ -106,6 +120,28 @@ impl GitRunner for RecordingRunner {
                 .collect(),
         );
         self.inner.run(repository, args)
+    }
+
+    /// 승인 전용 경로로 들어온 명령을 따로 기록한 뒤 실제 runner로 실행한다.
+    fn run_approved(&self, repository: &Path, command: UserApprovedForce<'_>) -> Result<GitOutput> {
+        self.approved.lock().expect("lock approved log").push(
+            command
+                .args()
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect(),
+        );
+        self.inner.run_approved(repository, command)
+    }
+}
+
+/// `run`만 구현한 runner. 승인 전용 경로를 모르는 runner의 기본 동작을 확인하는 데 쓴다.
+struct PlainRunner(ProcessGitRunner);
+
+impl GitRunner for PlainRunner {
+    /// 실제 runner에 그대로 넘긴다.
+    fn run(&self, repository: &Path, args: &[&OsStr]) -> Result<GitOutput> {
+        self.0.run(repository, args)
     }
 }
 
@@ -129,10 +165,7 @@ fn is_forbidden(args: &[String]) -> bool {
 fn full_cleanup_never_issues_forbidden_commands() {
     let sandbox = Sandbox::new();
     let s = sandbox.scenario();
-    let runner = RecordingRunner {
-        inner: ProcessGitRunner::new(),
-        calls: Mutex::new(Vec::new()),
-    };
+    let runner = RecordingRunner::new();
     let namespaces = default_namespaces();
 
     let plan = CleanupPlanner::new(&runner)
@@ -140,6 +173,14 @@ fn full_cleanup_never_issues_forbidden_commands() {
         .expect("scan");
     let result = CleanupExecutor::new(&runner).execute(&plan);
     assert!(result.errors.is_empty(), "{:?}", result.errors);
+    // 사용자가 고르지 않았으면 강제 삭제 후보가 있어도 승인 전용 경로를 한 번도 쓰지 않는다.
+    assert!(
+        plan.force_candidates.len() >= 4,
+        "{:?}",
+        plan.force_candidates
+    );
+    let approved = runner.approved.lock().expect("approved log").clone();
+    assert!(approved.is_empty(), "{approved:?}");
 
     let calls = runner.calls.into_inner().expect("call log");
     let forbidden: Vec<&Vec<String>> = calls.iter().filter(|args| is_forbidden(args)).collect();
@@ -190,10 +231,7 @@ fn scan_issues_only_read_only_commands() {
     let sandbox = Sandbox::new();
     let s = sandbox.scenario();
     sandbox.git(&s.work, &["remote", "set-head", "origin", "--delete"]);
-    let runner = RecordingRunner {
-        inner: ProcessGitRunner::new(),
-        calls: Mutex::new(Vec::new()),
-    };
+    let runner = RecordingRunner::new();
     let namespaces = default_namespaces();
     let plan = CleanupPlanner::new(&runner)
         .scan(&request(&s.work, &namespaces, &[]))
@@ -222,4 +260,67 @@ fn scan_issues_only_read_only_commands() {
             .iter()
             .any(|args| args.first().is_some_and(|a| a == "ls-remote"))
     );
+}
+
+/// 사용자가 고른 강제 삭제는 승인 전용 경로로만, 정해진 형태로만 나간다.
+///
+/// 일반 경로(`run`)로 나간 명령에는 여전히 금지 명령이 하나도 없어야 한다.
+#[test]
+fn forced_commands_only_leave_through_the_approved_path() {
+    let sandbox = Sandbox::new();
+    let s = sandbox.scenario();
+    let runner = RecordingRunner::new();
+    let namespaces = default_namespaces();
+    let mut plan = CleanupPlanner::new(&runner)
+        .scan(&request(&s.work, &namespaces, &[]))
+        .expect("scan");
+    // 확인 창에서 dirty worktree 하나와 merge되지 않은 branch 하나를 체크한 상태를 만든다.
+    let (approved, offered): (Vec<_>, Vec<_>) = std::mem::take(&mut plan.force_candidates)
+        .into_iter()
+        .partition(|candidate| candidate.branch == "wt-dirty" || candidate.branch == "unmerged");
+    plan.approved_force = approved;
+    plan.force_candidates = offered;
+
+    let result = CleanupExecutor::new(&runner).execute(&plan);
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+
+    let mut approved = runner.approved.into_inner().expect("approved log");
+    approved.sort();
+    let wt_dirty = s.wt_dirty.to_string_lossy().into_owned();
+    assert_eq!(
+        approved,
+        [
+            vec!["branch", "-D", "--", "unmerged"],
+            vec!["worktree", "remove", "--force", "--", wt_dirty.as_str()],
+        ]
+    );
+    let calls = runner.calls.into_inner().expect("call log");
+    let forbidden: Vec<&Vec<String>> = calls.iter().filter(|args| is_forbidden(args)).collect();
+    assert!(
+        forbidden.is_empty(),
+        "forbidden commands issued: {forbidden:?}"
+    );
+    // dirty worktree의 branch는 merge되어 있으므로 강제 삭제가 아니라 `branch -d`로 지운다.
+    assert!(
+        calls
+            .iter()
+            .any(|args| args == &["branch", "-d", "--", "wt-dirty"])
+    );
+    assert!(!s.wt_dirty.exists());
+    assert!(s.wt_staged.is_dir());
+}
+
+/// 승인 전용 경로를 구현하지 않은 runner는 강제 삭제를 거부한다.
+#[test]
+fn runner_without_approved_path_refuses_forced_commands() {
+    let sandbox = Sandbox::new();
+    let s = sandbox.scenario();
+    let runner = PlainRunner(ProcessGitRunner::new());
+
+    let refused = runner.run_approved(&s.work, UserApprovedForce::DeleteBranch("unmerged"));
+    assert!(matches!(refused, Err(CleanupError::ForbiddenCommand(_))));
+    let refused = runner.run_approved(&s.work, UserApprovedForce::RemoveWorktree(&s.wt_dirty));
+    assert!(matches!(refused, Err(CleanupError::ForbiddenCommand(_))));
+    assert!(sandbox.ref_exists(&s.work, "refs/heads/unmerged"));
+    assert!(s.wt_dirty.is_dir());
 }

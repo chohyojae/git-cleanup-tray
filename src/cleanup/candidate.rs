@@ -38,6 +38,33 @@ pub struct CustomRefCandidate {
     pub commit: ObjectId,
 }
 
+/// 강제 삭제 후보를 지우면 잃는 것. 확인 창의 경고 문구와 executor의 삭제 방식을 정한다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForceRisk {
+    /// branch는 base에 merge되었지만 worktree에 staged/modified/untracked 변경이 있다.
+    /// worktree만 강제로 제거하고 branch는 `git branch -d`로 지운다.
+    DirtyWorktree,
+    /// branch가 base에 merge되지 않았다. `git branch -D`로 지우며 commit을 잃을 수 있다.
+    /// 연결된 worktree의 변경 여부는 따로 검사하지 않고 함께 강제로 제거한다.
+    NotMerged,
+}
+
+/// 사용자가 Clean 확인 창에서 직접 골라야만 지우는 후보 (PLAN 8.5).
+///
+/// 기본 정리 대상이 아니다. planner는 같은 대상을 [`SkippedItem`]으로도 남기며, 고르지 않으면
+/// 지금까지처럼 건너뛴다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForceCandidate {
+    /// branch 이름 (`refs/heads/` 제외).
+    pub branch: String,
+    /// Scan 시점의 branch commit. 그 뒤 branch가 움직였으면 지우지 않는다.
+    pub commit: ObjectId,
+    /// 함께 제거할 linked worktree 경로. 없으면 branch만 지운다.
+    pub worktree: Option<PathBuf>,
+    /// 지우면 잃는 것.
+    pub risk: ForceRisk,
+}
+
 /// 제외 항목의 종류. Detail 화면의 Worktrees / Local Branches / Custom Refs 구분에 쓴다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetKind {

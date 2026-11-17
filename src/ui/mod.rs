@@ -24,6 +24,6 @@ mod generated {
 }
 
 pub use generated::{
-    AboutWindow, AppTray, CleanupDialog, DetailItem, DetailSection, DetailWindow, DialogStage,
-    MainWindow, RepositoryEditor, RepositoryRowData, SettingsWindow,
+    AboutWindow, AppTray, CleanupDialog, CleanupItem, DetailItem, DetailSection, DetailWindow,
+    DialogStage, MainWindow, RepositoryEditor, RepositoryRowData, SettingsWindow,
 };

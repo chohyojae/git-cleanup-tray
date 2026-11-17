@@ -2,8 +2,10 @@
 
 // Clean All 확인과 결과를 보여주는 dialog (PLAN 12, 13장).
 // 같은 창이 확인 → 실행 중 → 결과 순서로 바뀐다. Rust 쪽에서 필요할 때만 만들고 닫으면 drop한다.
+// 확인 단계에서는 정리할 항목을 체크박스 목록으로 보여주고, 체크한 항목만 정리한다.
 
-import { Button, VerticalBox, HorizontalBox, GridBox, ListView } from "std-widgets.slint";
+import { Button, CheckBox, VerticalBox, HorizontalBox, GridBox, ListView } from "std-widgets.slint";
+import { CleanupItem } from "components/types.slint";
 
 // dialog가 보여주는 단계.
 export enum DialogStage {
@@ -38,7 +40,11 @@ export component CleanupDialog inherits Window {
     in property <DialogStage> stage: DialogStage.confirm;
     // 상단 제목 (예: "Clean up 16 items?", "Removed 15 items").
     in property <string> heading;
-    // confirm 단계에서는 삭제 예정 수, done 단계에서는 실제 처리 수.
+    // confirm 단계의 체크박스 목록. 체크 상태는 사용자가 바꾸고 Rust가 확인 시점에 읽는다.
+    in property <[CleanupItem]> items;
+    // 체크한 항목 중 커밋하지 않은 변경이나 merge되지 않은 commit을 잃는 항목 수.
+    in property <int> forced;
+    // confirm 단계에서는 체크한 항목 기준 삭제 예정 수, done 단계에서는 실제 처리 수.
     in property <int> repositories;
     in property <int> worktrees;
     in property <int> branches;
@@ -50,16 +56,18 @@ export component CleanupDialog inherits Window {
     // running 단계의 진행 상황 ("Cleaning 1 of 3: Project A").
     in property <string> progress;
 
-    // confirm 단계의 Clean 버튼.
+    // confirm 단계의 Clean 버튼. 체크한 항목만 정리한다.
     callback confirmed();
+    // 체크 상태가 바뀌었다. Rust가 숫자와 경고를 다시 계산한다.
+    callback selection-changed();
     // confirm 단계 Cancel 또는 done 단계 Close 버튼. 창 닫기와 같은 처리를 한다.
     callback dismissed();
     // running 단계 Cancel 버튼. 진행 중인 저장소까지 끝내고 멈춘다.
     callback cancel-run();
 
     title: "Clean All";
-    preferred-width: 420px;
-    min-width: 360px;
+    preferred-width: 560px;
+    min-width: 420px;
 
     VerticalBox {
         Text {
@@ -97,15 +105,58 @@ export component CleanupDialog inherits Window {
             }
         }
 
-        // 삭제하지 않는 것을 확인 전에 분명히 알린다 (PLAN 13장 필수 문구).
+        // 체크한 항목만 정리한다. 작업을 잃는 항목은 Rust가 체크하지 않은 상태로 넘긴다.
+        if root.stage == DialogStage.confirm && root.items.length > 0: ListView {
+            min-height: 120px;
+            preferred-height: 240px;
+            vertical-stretch: 1;
+            for item in root.items: HorizontalBox {
+                padding: 2px;
+                CheckBox {
+                    checked: item.checked;
+                    toggled => {
+                        item.checked = self.checked;
+                        root.selection-changed();
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: item.title;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: item.note;
+                        font-size: 11px;
+                        opacity: 0.7;
+                        overflow: elide;
+                    }
+                }
+                // 상태는 색상이 아니라 문구로 구분한다 (PLAN 23장).
+                if item.risky: Text {
+                    text: "Loses work";
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // 삭제하지 않는 것과 되돌릴 수 없는 것을 확인 전에 분명히 알린다 (PLAN 13장 필수 문구).
         if root.stage == DialogStage.confirm: VerticalBox {
             padding: 0;
             Text {
-                text: "Remote branches will not be deleted.";
+                text: "Only checked items are cleaned. Remote branches will not be deleted.";
                 wrap: word-wrap;
             }
             Text {
-                text: "Worktrees with uncommitted or untracked files will be skipped.";
+                text: "Items marked \"Loses work\" have uncommitted changes or unmerged commits and are unchecked by default.";
+                wrap: word-wrap;
+            }
+            if root.forced > 0: Text {
+                text: "Warning: " + root.forced + " checked item(s) will permanently lose uncommitted changes or unmerged commits. This cannot be undone.";
+                font-weight: 600;
                 wrap: word-wrap;
             }
         }
@@ -138,6 +189,8 @@ export component CleanupDialog inherits Window {
             if root.stage == DialogStage.confirm: Button {
                 text: "Clean " + (root.worktrees + root.branches + root.custom-refs) + " items";
                 primary: true;
+                // 아무것도 체크하지 않았으면 실행할 것이 없다.
+                enabled: root.worktrees + root.branches + root.custom-refs > 0;
                 clicked => { root.confirmed(); }
             }
             if root.stage == DialogStage.running: Button {

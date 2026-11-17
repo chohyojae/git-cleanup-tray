@@ -20,7 +20,9 @@ use crate::error::CleanupError;
 use crate::git::default_branch::ResolvedBase;
 use crate::git::repository::RepositoryId;
 
-use candidate::{BranchCandidate, CustomRefCandidate, SkippedItem, WorktreeCandidate};
+use candidate::{
+    BranchCandidate, CustomRefCandidate, ForceCandidate, SkippedItem, WorktreeCandidate,
+};
 
 /// 저장소 하나에 대한 정리 계획. Scan 결과이며 아무것도 변경하지 않은 상태다.
 ///
@@ -42,6 +44,12 @@ pub struct CleanupPlan {
     pub branches: Vec<BranchCandidate>,
     /// 삭제할 custom ref.
     pub custom_refs: Vec<CustomRefCandidate>,
+    /// 사용자가 확인 창에서 직접 골라야만 지울 수 있는 후보 (dirty worktree, merge되지 않은 branch).
+    /// executor는 이 목록을 실행하지 않는다.
+    pub force_candidates: Vec<ForceCandidate>,
+    /// 사용자가 확인 창에서 고른 강제 삭제 대상. planner는 항상 비워 두며, 확인 창의 선택만
+    /// `force_candidates`에서 여기로 옮긴다. 주기 정리와 확인 없는 Clean All에서는 비어 있다.
+    pub approved_force: Vec<ForceCandidate>,
     /// 안전 조건을 만족하지 못해 제외한 항목과 사유.
     pub skipped: Vec<SkippedItem>,
     /// 항목 하나를 검사하다 난 오류. 해당 항목은 후보에서 빠지고 나머지 검사는 계속한다.
@@ -49,10 +57,15 @@ pub struct CleanupPlan {
 }
 
 impl CleanupPlan {
-    /// 실제로 삭제할 항목 수 (worktree + branch + custom ref). 확인 dialog의 "Clean N items"에 쓴다.
+    /// 실제로 삭제할 항목 수 (worktree + branch + custom ref + 사용자가 고른 강제 삭제 대상).
+    ///
+    /// 고르지 않은 `force_candidates`는 세지 않는다. 0이면 이 저장소에는 아무 mutation도 하지 않는다.
     #[must_use]
     pub fn removable_count(&self) -> usize {
-        self.worktrees.len() + self.branches.len() + self.custom_refs.len()
+        self.worktrees.len()
+            + self.branches.len()
+            + self.custom_refs.len()
+            + self.approved_force.len()
     }
 }
 

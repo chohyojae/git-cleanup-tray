@@ -8,9 +8,10 @@
 use std::rc::Rc;
 
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit::event::WindowEvent};
-use slint::{CloseRequestResponse, ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{CloseRequestResponse, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use super::commands::AppCommand;
+use super::selection::{self, SelectionCounts};
 use super::tasks::{DetailReport, RepositoryChange};
 use super::{App, EditorView, MainView, dispatch, hide_and_release, release_later, with_app};
 use crate::git::refs;
@@ -20,8 +21,8 @@ use crate::storage;
 use crate::storage::repository_store::RepositoryConfig;
 use crate::storage::settings_store::{AppSettings, MaintenanceInterval};
 use crate::ui::{
-    AboutWindow, CleanupDialog, DetailItem, DetailSection, DetailWindow, DialogStage, MainWindow,
-    RepositoryEditor, SettingsWindow,
+    AboutWindow, CleanupDialog, CleanupItem, DetailItem, DetailSection, DetailWindow, DialogStage,
+    MainWindow, RepositoryEditor, SettingsWindow,
 };
 
 /// 확인 dialog에 넣는 숫자 묶음. 확인 단계와 결과 단계가 같은 칸을 쓴다.
@@ -148,6 +149,9 @@ impl App {
         };
         dialog.set_stage(stage);
         dialog.set_heading(heading.into());
+        // 체크박스 목록은 확인 단계에서 [`App::show_cleanup_selection`]이 채운다.
+        dialog.set_items(ModelRc::default());
+        dialog.set_forced(0);
         dialog.set_repositories(to_slint_int(counts.repositories));
         dialog.set_worktrees(to_slint_int(counts.worktrees));
         dialog.set_branches(to_slint_int(counts.branches));
@@ -160,13 +164,87 @@ impl App {
         }
     }
 
+    /// 확인 dialog를 체크박스 목록과 함께 확인 단계로 보여준다.
+    ///
+    /// 목록은 확인을 기다리는 계획(`pending`)에서 만든다. 안전한 항목은 체크하고, 지우면 작업을
+    /// 잃는 항목은 체크하지 않은 채로 둔다. `counts`에서는 건너뛴 수와 오류 수만 쓰고, 나머지 숫자는
+    /// 체크 상태로 계산한다.
+    pub(super) fn show_cleanup_selection(
+        &self,
+        heading: &str,
+        counts: &DialogCounts,
+        problems: &[String],
+    ) {
+        let (items, selectable_dirty) = match self.pending.borrow().as_ref() {
+            Some(pending) => (
+                selection::items(pending),
+                selection::selectable_dirty_count(pending),
+            ),
+            None => return,
+        };
+        // dirty worktree는 체크박스 줄로 보여주므로 "Skipped"에는 고를 수 없는 항목만 남긴다.
+        let fixed = DialogCounts {
+            skipped: counts.skipped.saturating_sub(selectable_dirty),
+            ..*counts
+        };
+        self.show_cleanup_stage(DialogStage::Confirm, heading, &fixed, problems);
+        let Some(dialog) = self
+            .cleanup_dialog
+            .borrow()
+            .as_ref()
+            .map(CleanupDialog::clone_strong)
+        else {
+            return;
+        };
+        let rows: Vec<CleanupItem> = items
+            .into_iter()
+            .map(|item| CleanupItem {
+                title: item.title.into(),
+                note: item.note.into(),
+                risky: item.risky,
+                checked: item.checked,
+            })
+            .collect();
+        dialog.set_items(ModelRc::new(VecModel::from(rows)));
+        self.refresh_cleanup_selection();
+    }
+
+    /// 확인 창 목록의 현재 체크 상태. 창이 없으면 `None`.
+    pub(super) fn cleanup_selection(&self) -> Option<Vec<bool>> {
+        let dialog = self.cleanup_dialog.borrow();
+        let items = dialog.as_ref()?.get_items();
+        Some(items.iter().map(|item| item.checked).collect())
+    }
+
+    /// 체크 상태가 바뀔 때마다 확인 창의 숫자와 강제 삭제 경고를 다시 계산한다.
+    fn refresh_cleanup_selection(&self) {
+        let Some(checked) = self.cleanup_selection() else {
+            return;
+        };
+        let counts = self
+            .pending
+            .borrow()
+            .as_ref()
+            .map_or_else(SelectionCounts::default, |pending| {
+                selection::counts(pending, &checked)
+            });
+        if let Some(dialog) = self.cleanup_dialog.borrow().as_ref() {
+            dialog.set_repositories(to_slint_int(counts.repositories));
+            dialog.set_worktrees(to_slint_int(counts.worktrees));
+            dialog.set_branches(to_slint_int(counts.branches));
+            dialog.set_custom_refs(to_slint_int(counts.custom_refs));
+            dialog.set_forced(to_slint_int(counts.forced));
+        }
+    }
+
     /// 확인 dialog handle을 돌려준다. 없으면 새로 만들고 callback을 연결한다.
     fn cleanup_dialog(&self) -> Result<CleanupDialog, slint::PlatformError> {
         if let Some(dialog) = self.cleanup_dialog.borrow().as_ref() {
             return Ok(dialog.clone_strong());
         }
         let dialog = CleanupDialog::new()?;
-        dialog.on_confirmed(|| with_app(App::start_cleanup));
+        dialog.on_confirmed(|| with_app(App::confirm_cleanup));
+        dialog.on_selection_changed(|| with_app(App::refresh_cleanup_selection));
         dialog.on_dismissed(|| with_app(|app| app.dismiss_cleanup_dialog(true)));
         dialog.on_cancel_run(|| dispatch(AppCommand::CancelJob));
         dialog.window().on_close_requested(|| {
@@ -180,7 +258,7 @@ impl App {
     /// 확인 dialog를 닫는다. 확인 전이면 계획을 버리고, 실행 중이면 작업은 계속하고 창만 닫는다.
     ///
     /// `hide`가 `false`면 창 닫기 버튼으로 이미 숨겨지는 중이라 직접 숨기지 않는다.
-    fn dismiss_cleanup_dialog(&self, hide: bool) {
+    pub(super) fn dismiss_cleanup_dialog(&self, hide: bool) {
         let discarded = self.pending.borrow_mut().take();
         if discarded.is_some() {
             log::info!("cleanup cancelled before execution");

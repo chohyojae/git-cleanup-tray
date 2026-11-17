@@ -114,7 +114,7 @@ pub enum ScanScope {
 /// 상태를 재검증하므로, 확인을 기다리는 사이에 바뀐 대상은 `StateChanged`로 넘어간다.
 #[derive(Debug)]
 pub struct PendingCleanup {
-    /// 삭제할 항목이 있는 저장소의 plan.
+    /// 삭제할 항목이나 사용자가 고를 수 있는 강제 삭제 후보가 있는 저장소의 plan.
     pub plans: Vec<CleanupPlan>,
     /// 결과 문구와 이력에 쓸 저장소 이름.
     pub names: Vec<(RepositoryId, String)>,
@@ -226,7 +226,8 @@ pub fn scan(
                 if want_detail {
                     detail = Some(detail_report(&repo.name, &plan));
                 }
-                if plan.removable_count() > 0 {
+                // 사용자가 확인 창에서 고를 수 있는 강제 삭제 후보만 있는 plan도 넘긴다.
+                if plan.removable_count() > 0 || !plan.force_candidates.is_empty() {
                     plans.push(plan);
                 }
             }
