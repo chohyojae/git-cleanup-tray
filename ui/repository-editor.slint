@@ -3,7 +3,8 @@
 // 등록 저장소 설정 편집 창 (PLAN 6장 Edit Repository).
 // 저장소 경로는 바꿀 수 없다. 다른 저장소를 쓰려면 새로 추가한다.
 
-import { Button, CheckBox, LineEdit, TextEdit, VerticalBox, HorizontalBox, GridBox } from "std-widgets.slint";
+import { CheckBox, LineEdit, TextEdit, GridBox } from "std-widgets.slint";
+import { ActionButton, ActionBar, PageLayout, SectionTitle } from "components/style.slint";
 
 export component RepositoryEditor inherits Window {
     // 표시 이름.
@@ -27,11 +28,17 @@ export component RepositoryEditor inherits Window {
     callback cancel();
 
     title: "Edit Repository";
-    preferred-width: 460px;
+    preferred-width: 540px;
+    preferred-height: 500px;
+    min-width: 460px;
+    min-height: 440px;
 
-    VerticalBox {
+    PageLayout {
+        SectionTitle { text: "Edit Repository"; }
         GridBox {
             padding: 0;
+            spacing: 12px;
+            vertical-stretch: 0;
             Row {
                 Text { text: "Name"; vertical-alignment: center; }
                 LineEdit { text <=> root.name; }
@@ -52,24 +59,31 @@ export component RepositoryEditor inherits Window {
         CheckBox {
             text: "Include in Scan All / Clean All";
             checked <=> root.enabled;
+            vertical-stretch: 0;
         }
-        Text { text: "Custom ref namespaces (one per line, ending with /)"; }
+        Text {
+            text: "Custom ref namespaces (one per line, ending with /)";
+            wrap: word-wrap;
+            vertical-stretch: 0;
+        }
         TextEdit {
             text <=> root.namespaces;
-            min-height: 60px;
+            min-height: 76px;
+            preferred-height: 100px;
+            // 남은 높이는 편집 영역에 배정해 입력 행과 버튼이 늘어나지 않게 한다.
+            vertical-stretch: 1;
         }
         if root.error != "": Text {
             text: root.error;
             wrap: word-wrap;
+            vertical-stretch: 0;
         }
-        HorizontalBox {
-            padding: 0;
-            alignment: end;
-            Button {
+        ActionBar {
+            ActionButton {
                 text: "Cancel";
                 clicked => { root.cancel(); }
             }
-            Button {
+            ActionButton {
                 text: "Save";
                 primary: true;
                 clicked => { root.save(); }

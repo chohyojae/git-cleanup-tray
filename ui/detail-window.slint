@@ -3,7 +3,8 @@
 // 저장소 하나의 정리 계획을 종류별로 보여주는 상세 창 (PLAN 14장).
 // 실제 ref 이름과 Git 오류(stderr, exit code)를 그대로 확인할 수 있게 한다 (PLAN 23, 25장).
 
-import { Button, VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
+import { ActionButton, ActionBar, PageLayout, SectionTitle, MutedText, Divider } from "components/style.slint";
 import { DetailSection } from "components/types.slint";
 
 export component DetailWindow inherits Window {
@@ -18,62 +19,59 @@ export component DetailWindow inherits Window {
     callback close-requested();
 
     title: "Details - " + root.heading;
-    preferred-width: 560px;
+    preferred-width: 620px;
     preferred-height: 480px;
     min-width: 400px;
     min-height: 300px;
 
-    VerticalBox {
-        Text {
+    PageLayout {
+        SectionTitle {
             text: root.heading;
-            font-size: 16px;
-            font-weight: 600;
+            overflow: elide;
         }
-        Text {
+        MutedText {
             text: root.subheading;
             wrap: word-wrap;
-            opacity: 0.7;
         }
+        Divider { }
         ScrollView {
             vertical-stretch: 1;
             VerticalLayout {
-                spacing: 4px;
+                spacing: 16px;
+                alignment: start;
                 if root.sections.length == 0: Text {
                     text: "Nothing to clean.";
                 }
                 for section in root.sections: VerticalLayout {
-                    spacing: 4px;
-                    padding-bottom: 8px;
+                    spacing: 8px;
+                    alignment: start;
                     Text {
                         text: section.title + " (" + section.items.length + ")";
                         font-weight: 600;
+                        vertical-stretch: 0;
                     }
                     for item in section.items: VerticalLayout {
                         padding-left: 12px;
+                        spacing: 4px;
+                        alignment: start;
                         Text {
                             text: item.title;
                             wrap: word-wrap;
                         }
-                        if item.subtitle != "": Text {
+                        if item.subtitle != "": MutedText {
                             text: item.subtitle;
-                            font-size: 11px;
-                            opacity: 0.7;
                             wrap: word-wrap;
                         }
-                        if item.note != "": Text {
+                        if item.note != "": MutedText {
                             text: item.note;
-                            font-size: 11px;
-                            opacity: 0.7;
                             wrap: word-wrap;
                         }
                     }
                 }
             }
         }
-        HorizontalBox {
-            padding: 0;
-            alignment: end;
-            Button {
+        ActionBar {
+            ActionButton {
                 text: "Close";
                 primary: true;
                 clicked => { root.close-requested(); }

@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+// 창 크기가 바뀌어도 버튼 비율과 여백을 유지하는 공통 UI 구성 요소.
+import { Button, HorizontalBox, VerticalBox, Palette } from "std-widgets.slint";
+
+// 기본 버튼의 키보드·접근성 동작을 유지하고 세로로 늘어나는 것만 막는다.
+export component ActionButton inherits Button {
+    height: 34px;
+    min-width: 80px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+}
+
+// 남은 창 높이를 버튼이 가져가지 않도록 하단 작업 영역의 높이를 고정한다.
+export component ActionBar inherits HorizontalBox {
+    height: 34px;
+    padding: 0;
+    spacing: 8px;
+    alignment: end;
+    vertical-stretch: 0;
+}
+
+// 모든 창에서 같은 바깥 여백과 구역 간격을 쓴다.
+export component PageLayout inherits VerticalBox {
+    padding: 24px;
+    spacing: 16px;
+}
+
+// 제목은 창의 남는 세로 공간을 차지하지 않는다.
+export component SectionTitle inherits Text {
+    font-size: 20px;
+    font-weight: 600;
+    vertical-stretch: 0;
+}
+
+// 경로·설명 등 보조 정보는 제목과 시각적으로 구분한다.
+export component MutedText inherits Text {
+    font-size: 12px;
+    opacity: 0.72;
+    vertical-stretch: 0;
+}
+
+// 시스템 테마를 따르는 얇은 구분선.
+export component Divider inherits Rectangle {
+    height: 1px;
+    background: Palette.border;
+    vertical-stretch: 0;
+}

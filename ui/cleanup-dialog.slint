@@ -4,8 +4,9 @@
 // 같은 창이 확인 → 실행 중 → 결과 순서로 바뀐다. Rust 쪽에서 필요할 때만 만들고 닫으면 drop한다.
 // 확인 단계에서는 정리할 항목을 체크박스 목록으로 보여주고, 체크한 항목만 정리한다.
 
-import { Button, CheckBox, VerticalBox, HorizontalBox, GridBox, ListView } from "std-widgets.slint";
+import { CheckBox, ScrollView, ListView, Palette } from "std-widgets.slint";
 import { CleanupItem } from "components/types.slint";
+import { ActionButton, ActionBar, SectionTitle, MutedText, Divider } from "components/style.slint";
 
 // dialog가 보여주는 단계.
 export enum DialogStage {
@@ -17,21 +18,25 @@ export enum DialogStage {
     done,
 }
 
-// 이름과 숫자 한 줄. 상태를 색상이 아니라 문구로 구분한다 (PLAN 23장).
-component CountRow inherits HorizontalBox {
+// 삭제 종류별 숫자를 같은 폭으로 보여준다. 상태는 색상이 아니라 문구로 구분한다.
+component SummaryMetric inherits VerticalLayout {
     // 항목 이름.
     in property <string> label;
     // 항목 수.
     in property <int> count;
 
-    padding: 0;
-    Text {
-        text: root.label;
-        horizontal-stretch: 1;
-    }
+    spacing: 4px;
+    alignment: center;
+    horizontal-stretch: 1;
     Text {
         text: root.count;
-        horizontal-alignment: right;
+        font-size: 28px;
+        font-weight: 600;
+        horizontal-alignment: center;
+    }
+    MutedText {
+        text: root.label;
+        horizontal-alignment: center;
     }
 }
 
@@ -46,10 +51,15 @@ export component CleanupDialog inherits Window {
     in property <int> forced;
     // confirm 단계에서는 체크한 항목 기준 삭제 예정 수, done 단계에서는 실제 처리 수.
     in property <int> repositories;
+    // 삭제할 또는 삭제한 worktree 수.
     in property <int> worktrees;
+    // 삭제할 또는 삭제한 local branch 수.
     in property <int> branches;
+    // 삭제할 또는 삭제한 custom ref 수.
     in property <int> custom-refs;
+    // 건너뛴 항목 수.
     in property <int> skipped;
+    // 오류 수.
     in property <int> errors;
     // 사용자가 확인할 오류·건너뜀 상세 ("저장소: 내용"). Rust 쪽에서 개수를 제한해 넘긴다.
     in property <[string]> problems;
@@ -66,141 +76,175 @@ export component CleanupDialog inherits Window {
     callback cancel-run();
 
     title: "Clean All";
-    preferred-width: 560px;
-    min-width: 420px;
+    preferred-width: 600px;
+    preferred-height: root.stage == DialogStage.confirm ? 700px
+        : root.problems.length > 0 ? 520px : 360px;
+    min-width: 460px;
+    min-height: 320px;
 
-    VerticalBox {
-        Text {
-            text: root.heading;
-            font-size: 16px;
-            font-weight: 600;
-            wrap: word-wrap;
-        }
-
-        VerticalBox {
-            padding: 0;
-            CountRow {
-                label: "Repositories";
-                count: root.repositories;
-            }
-            CountRow {
-                label: "Worktrees";
-                count: root.worktrees;
-            }
-            CountRow {
-                label: "Local branches";
-                count: root.branches;
-            }
-            CountRow {
-                label: "Custom refs";
-                count: root.custom-refs;
-            }
-            CountRow {
-                label: "Skipped";
-                count: root.skipped;
-            }
-            if root.errors > 0: CountRow {
-                label: "Errors";
-                count: root.errors;
-            }
-        }
-
-        // 체크한 항목만 정리한다. 작업을 잃는 항목은 Rust가 체크하지 않은 상태로 넘긴다.
-        if root.stage == DialogStage.confirm && root.items.length > 0: ListView {
-            min-height: 120px;
-            preferred-height: 240px;
+    VerticalLayout {
+        spacing: 0;
+        // 본문만 스크롤한다. 단계 전환·최대화 뒤에도 버튼은 아래에서 같은 크기를 유지한다.
+        ScrollView {
             vertical-stretch: 1;
-            for item in root.items: HorizontalBox {
-                padding: 2px;
-                CheckBox {
-                    checked: item.checked;
-                    toggled => {
-                        item.checked = self.checked;
-                        root.selection-changed();
-                    }
-                }
+            HorizontalLayout {
+                // 큰 창에서도 숫자와 설명이 양 끝으로 흩어지지 않게 본문 폭을 제한한다.
+                padding: 24px;
+                Rectangle { horizontal-stretch: 0; }
                 VerticalLayout {
+                    max-width: 720px;
                     horizontal-stretch: 1;
-                    alignment: center;
-                    Text {
-                        text: item.title;
-                        overflow: elide;
+                    spacing: 20px;
+                    alignment: start;
+                    VerticalLayout {
+                        spacing: 6px;
+                        SectionTitle {
+                            text: root.heading;
+                            wrap: word-wrap;
+                        }
+                        MutedText {
+                            text: root.stage == DialogStage.confirm ? "Review the items selected for cleanup."
+                                : root.stage == DialogStage.running ? "Cleanup is in progress."
+                                : "Cleanup results";
+                            wrap: word-wrap;
+                        }
                     }
-                    Text {
-                        text: item.note;
-                        font-size: 11px;
-                        opacity: 0.7;
-                        overflow: elide;
+
+                    Rectangle {
+                        height: 138px;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: Palette.border;
+                        background: Palette.alternate-background;
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 12px;
+                            HorizontalLayout {
+                                height: 64px;
+                                spacing: 12px;
+                                SummaryMetric { label: "Worktrees"; count: root.worktrees; }
+                                SummaryMetric { label: "Local branches"; count: root.branches; }
+                                SummaryMetric { label: "Custom refs"; count: root.custom-refs; }
+                            }
+                            Divider { }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                MutedText { text: "Repositories  " + root.repositories; }
+                                Rectangle { horizontal-stretch: 1; }
+                                MutedText { text: "Skipped  " + root.skipped; }
+                                if root.errors > 0: Text {
+                                    text: "Errors  " + root.errors;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                }
+                            }
+                        }
+                    }
+
+                    // 긴 목록은 보이는 행만 만든다. 작업을 잃는 항목은 Rust가 미선택으로 넘긴다.
+                    if root.stage == DialogStage.confirm && root.items.length > 0: ListView {
+                        height: min(280px, root.items.length * 88px);
+                        for item in root.items: VerticalLayout {
+                            spacing: 0;
+                            HorizontalLayout {
+                                padding-top: 10px;
+                                padding-bottom: 10px;
+                                spacing: 8px;
+                                CheckBox {
+                                    checked: item.checked;
+                                    toggled => {
+                                        item.checked = self.checked;
+                                        root.selection-changed();
+                                    }
+                                }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    spacing: 4px;
+                                    Text { text: item.title; wrap: word-wrap; }
+                                    MutedText { text: item.note; wrap: word-wrap; }
+                                }
+                                if item.risky: Text {
+                                    text: "Loses work";
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Divider { }
+                        }
+                    }
+
+                    // 삭제 범위와 되돌릴 수 없는 항목을 확인 전에 알린다 (PLAN 13장 필수 문구).
+                    if root.stage == DialogStage.confirm: VerticalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Only checked items are cleaned. Remote branches will not be deleted.";
+                            wrap: word-wrap;
+                        }
+                        MutedText {
+                            text: "Items marked \"Loses work\" have uncommitted changes or unmerged commits and are unchecked by default.";
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    if root.stage == DialogStage.running && root.progress != "": Text {
+                        text: root.progress;
+                        wrap: word-wrap;
+                    }
+                    if root.problems.length > 0: VerticalLayout {
+                        spacing: 8px;
+                        Text { text: "Details"; font-weight: 600; }
+                        ListView {
+                            height: min(180px, root.problems.length * 64px);
+                            for line in root.problems: Text { text: line; wrap: word-wrap; }
+                        }
                     }
                 }
-                // 상태는 색상이 아니라 문구로 구분한다 (PLAN 23장).
-                if item.risky: Text {
-                    text: "Loses work";
-                    font-size: 11px;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                }
+                Rectangle { horizontal-stretch: 0; }
             }
         }
 
-        // 삭제하지 않는 것과 되돌릴 수 없는 것을 확인 전에 분명히 알린다 (PLAN 13장 필수 문구).
-        if root.stage == DialogStage.confirm: VerticalBox {
-            padding: 0;
+        // 위험 항목을 체크한 직후 경고가 스크롤 아래에 가려지지 않게 버튼 옆에 둔다.
+        if root.stage == DialogStage.confirm && root.forced > 0: VerticalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-bottom: 16px;
             Text {
-                text: "Only checked items are cleaned. Remote branches will not be deleted.";
-                wrap: word-wrap;
-            }
-            Text {
-                text: "Items marked \"Loses work\" have uncommitted changes or unmerged commits and are unchecked by default.";
-                wrap: word-wrap;
-            }
-            if root.forced > 0: Text {
                 text: "Warning: " + root.forced + " checked item(s) will permanently lose uncommitted changes or unmerged commits. This cannot be undone.";
                 font-weight: 600;
                 wrap: word-wrap;
             }
         }
-
-        if root.stage == DialogStage.running && root.progress != "": Text {
-            text: root.progress;
-            wrap: word-wrap;
-        }
-
-        if root.problems.length > 0: ListView {
-            min-height: 60px;
-            preferred-height: 120px;
-            for line in root.problems: Text {
-                text: line;
-                wrap: word-wrap;
-            }
-        }
-
-        HorizontalBox {
-            padding: 0;
-            alignment: end;
-            if root.stage == DialogStage.confirm: Button {
-                text: "Cancel";
-                clicked => { root.dismissed(); }
-            }
-            if root.stage == DialogStage.running: Button {
-                text: "Cancel";
-                clicked => { root.cancel-run(); }
-            }
-            if root.stage == DialogStage.confirm: Button {
-                text: "Clean " + (root.worktrees + root.branches + root.custom-refs) + " items";
-                primary: true;
-                // 아무것도 체크하지 않았으면 실행할 것이 없다.
-                enabled: root.worktrees + root.branches + root.custom-refs > 0;
-                clicked => { root.confirmed(); }
-            }
-            if root.stage == DialogStage.running: Button {
-                text: "Cleaning…";
-                enabled: false;
-            }
-            if root.stage == DialogStage.done: Button {
-                text: "Close";
-                primary: true;
-                clicked => { root.dismissed(); }
+        Divider { }
+        HorizontalLayout {
+            height: 82px;
+            padding: 24px;
+            ActionBar {
+                if root.stage == DialogStage.confirm: ActionButton {
+                    text: "Cancel";
+                    clicked => { root.dismissed(); }
+                }
+                if root.stage == DialogStage.running: ActionButton {
+                    text: "Cancel";
+                    clicked => { root.cancel-run(); }
+                }
+                if root.stage == DialogStage.confirm: ActionButton {
+                    text: "Clean " + (root.worktrees + root.branches + root.custom-refs) + " items";
+                    primary: true;
+                    // 아무것도 체크하지 않았으면 실행할 것이 없다.
+                    enabled: root.worktrees + root.branches + root.custom-refs > 0;
+                    clicked => { root.confirmed(); }
+                }
+                if root.stage == DialogStage.running: ActionButton {
+                    text: "Cleaning…";
+                    enabled: false;
+                }
+                if root.stage == DialogStage.done: ActionButton {
+                    text: "Close";
+                    primary: true;
+                    clicked => { root.dismissed(); }
+                }
             }
         }
     }

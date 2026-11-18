@@ -3,8 +3,9 @@
 // 메인 창 저장소 목록의 한 줄 (PLAN 10장).
 // 상태는 색상이 아니라 문구로 보여준다 (PLAN 23장).
 
-import { Button, HorizontalBox, VerticalBox, Palette } from "std-widgets.slint";
+import { Palette } from "std-widgets.slint";
 import { RepositoryRowData } from "components/types.slint";
+import { ActionButton, MutedText } from "components/style.slint";
 
 export component RepositoryRow inherits Rectangle {
     // 표시할 저장소 정보.
@@ -27,70 +28,78 @@ export component RepositoryRow inherits Rectangle {
     callback remove();
 
     border-width: 1px;
-    border-radius: 6px;
+    border-radius: 8px;
     border-color: Palette.border;
     background: Palette.alternate-background;
+    vertical-stretch: 0;
 
-    VerticalBox {
-        HorizontalBox {
-            padding: 0;
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+        alignment: start;
+        HorizontalLayout {
+            spacing: 16px;
             Text {
                 text: root.data.enabled ? root.data.name : root.data.name + " (disabled)";
+                font-size: 15px;
                 font-weight: 600;
                 horizontal-stretch: 1;
+                vertical-alignment: center;
                 overflow: elide;
             }
             Text {
                 text: root.data.status;
+                max-width: 300px;
                 horizontal-alignment: right;
+                vertical-alignment: center;
+                overflow: elide;
             }
         }
-        HorizontalBox {
-            padding: 0;
-            Text {
+        HorizontalLayout {
+            spacing: 16px;
+            MutedText {
                 text: root.data.path;
-                font-size: 11px;
-                opacity: 0.7;
                 horizontal-stretch: 1;
                 overflow: elide;
             }
-            if root.data.base != "": Text {
+            if root.data.base != "": MutedText {
                 text: "Base: " + root.data.base;
-                font-size: 11px;
-                opacity: 0.7;
+                max-width: 220px;
+                horizontal-alignment: right;
+                overflow: elide;
             }
         }
-        HorizontalBox {
-            padding: 0;
-            Text {
+        HorizontalLayout {
+            // 남는 세로 공간을 버튼에 배분하지 않도록 작업 행의 높이를 고정한다.
+            height: 34px;
+            spacing: 8px;
+            MutedText {
                 text: root.data.activity;
-                font-size: 11px;
-                opacity: 0.7;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
                 overflow: elide;
             }
-            Button {
+            ActionButton {
                 text: "Scan";
                 enabled: !root.scan-blocked && !root.data.scan-pending;
                 clicked => { root.scan(); }
             }
-            Button {
+            ActionButton {
                 text: "Clean";
                 enabled: !root.busy;
                 clicked => { root.clean(); }
             }
-            Button {
+            ActionButton {
                 text: "Update";
                 enabled: !root.busy;
                 clicked => { root.update(); }
             }
-            Button {
+            ActionButton {
                 text: "Details";
                 enabled: !root.busy;
                 clicked => { root.details(); }
             }
-            more-button := Button {
+            more-button := ActionButton {
                 text: "More";
                 clicked => { more.show(); }
             }
@@ -106,32 +115,37 @@ export component RepositoryRow inherits Rectangle {
         Rectangle {
             background: Palette.background;
             border-width: 1px;
-            border-radius: 6px;
+            border-radius: 8px;
             border-color: Palette.border;
         }
         VerticalLayout {
-            padding: 4px;
-            spacing: 2px;
-            Button {
+            padding: 6px;
+            spacing: 4px;
+            ActionButton {
                 text: "Edit…";
+                horizontal-stretch: 1;
                 enabled: !root.busy;
                 clicked => { root.edit(); }
             }
-            Button {
+            ActionButton {
                 text: root.data.enabled ? "Disable" : "Enable";
+                horizontal-stretch: 1;
                 enabled: !root.busy;
                 clicked => { root.toggle-enabled(); }
             }
-            Button {
+            ActionButton {
                 text: "Open Folder";
+                horizontal-stretch: 1;
                 clicked => { root.open-folder(); }
             }
-            Button {
+            ActionButton {
                 text: "Open Terminal";
+                horizontal-stretch: 1;
                 clicked => { root.open-terminal(); }
             }
-            Button {
+            ActionButton {
                 text: "Remove";
+                horizontal-stretch: 1;
                 enabled: !root.busy;
                 clicked => { root.remove(); }
             }

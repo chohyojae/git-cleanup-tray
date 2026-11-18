@@ -492,6 +492,10 @@ master                   2 removable / 1 warning
 
 실제 UI는 Windows/macOS style과 window size를 고려해 재구성한다.
 
+창마다 24px 바깥 여백과 34px 버튼 높이를 공통으로 쓴다. 메인 창은 제목·안내와 전체 작업
+버튼을 나누고, 저장소 카드는 이름·상태, 경로·base branch, 개별 작업 순서로 보여준다
+(2026-11-18).
+
 ### Repository Row
 
 표시 항목:
@@ -623,6 +627,12 @@ Clean 16 items
 ```
 
 처럼 표현한다.
+
+확인·실행·결과 단계는 같은 요약 카드를 사용한다. Worktrees·Local branches·Custom refs 수를
+나란히 보여주고, 그 아래에 Repositories·Skipped·Errors를 표시한다. 결과창 기본 크기는
+600×360px이며 상세가 있으면 높이를 늘린다. 본문만 스크롤하고 하단 버튼은 창을 키워도
+34px 높이를 유지한다. 작업 손실 경고는 스크롤 밖, Clean 버튼 바로 위에 표시한다
+(2026-11-18).
 
 ---
 
