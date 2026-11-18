@@ -286,14 +286,12 @@ fn forced_commands_only_leave_through_the_approved_path() {
 
     let mut approved = runner.approved.into_inner().expect("approved log");
     approved.sort();
-    let wt_dirty = s.wt_dirty.to_string_lossy().into_owned();
-    assert_eq!(
-        approved,
-        [
-            vec!["branch", "-D", "--", "unmerged"],
-            vec!["worktree", "remove", "--force", "--", wt_dirty.as_str()],
-        ]
-    );
+    let worktree_command = approved.pop().expect("approved worktree command");
+    let (path, args) = worktree_command.split_last().expect("worktree path");
+    assert_eq!(approved, [vec!["branch", "-D", "--", "unmerged"]]);
+    assert_eq!(args, ["worktree", "remove", "--force", "--"]);
+    // Git은 Windows에서도 `/`를 반환하므로 경로만 `Path`로 비교하고 명령 형태는 그대로 검사한다.
+    assert_eq!(Path::new(path), s.wt_dirty);
     let calls = runner.calls.into_inner().expect("call log");
     let forbidden: Vec<&Vec<String>> = calls.iter().filter(|args| is_forbidden(args)).collect();
     assert!(
