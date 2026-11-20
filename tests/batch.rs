@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Scan All 동시 처리와 Clean All 순차 처리 test (PLAN 12장).
+//! Scan All과 Clean All의 저장소별 동시 처리 test (PLAN 12장).
 //!
-//! 저장소별 검사는 동시에 실행해도 결과 순서를 보존하며, 한 저장소의 실패가 다른 검사를
-//! 막지 않고 취소 후에는 새 검사를 시작하지 않는지 확인한다.
+//! 저장소별 검사와 정리는 동시에 실행해도 결과 순서를 보존하며, 한 저장소의 실패가 다른 저장소를
+//! 막지 않고 취소 후에는 새 저장소를 시작하지 않는지 확인한다. 같은 저장소의 정리는 겹치지 않아야 한다.
 
 mod common;
 
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
@@ -120,7 +121,7 @@ fn scan_all_continues_after_failed_repository() {
     );
 }
 
-/// 각 저장소를 순서대로 실행하고, 지울 것이 없는 저장소는 실행하지 않는다.
+/// 각 저장소를 실행해 결과를 입력 순서로 돌려주고, 지울 것이 없는 저장소는 실행하지 않는다.
 #[test]
 fn clean_all_runs_each_repository_with_removable_items() {
     let sandbox = Sandbox::new();
@@ -220,6 +221,7 @@ struct OverlapRunner {
 
 impl GitRunner for OverlapRunner {
     /// 첫 호출만 서로 기다리고 나머지는 실제 Git을 사용한다. 순차 구현은 제한 시간에 실패한다.
+    /// Scan과 Clean 모두 저장소마다 첫 명령이 다른 저장소의 첫 명령과 겹쳐야 통과한다.
     fn run(
         &self,
         repository: &Path,
@@ -276,4 +278,146 @@ fn scan_all_runs_git_queries_for_distinct_repositories_concurrently() {
     }
     assert!(sandbox.ref_exists(&first, "refs/heads/병합된-작업"));
     assert!(sandbox.ref_exists(&second, "refs/heads/다른-병합된-작업"));
+}
+
+/// 서로 다른 저장소의 정리는 동시에 실행하고, 결과는 입력 순서로 돌려준다.
+#[test]
+fn clean_all_runs_distinct_repositories_concurrently() {
+    let sandbox = Sandbox::new();
+    let first = sandbox.clone_with_default("trunk", "첫 번째 동시 정리");
+    let second = sandbox.clone_with_default("기준", "두 번째 동시 정리");
+    sandbox.git(&first, &["branch", "병합된-작업"]);
+    sandbox.git(&second, &["branch", "다른-병합된-작업"]);
+    let namespaces = default_namespaces();
+    let plans = plans(batch::scan_all(
+        &ProcessGitRunner::new(),
+        &requests(&[&first, &second], &namespaces),
+        &CancellationToken::new(),
+        &mut |_| {},
+    ));
+    assert_eq!(plans.len(), 2);
+
+    let runner = OverlapRunner {
+        entered: Mutex::new(HashSet::new()),
+        ready: Condvar::new(),
+    };
+    let mut started = Vec::new();
+    let results = batch::clean_all(&runner, &plans, &CancellationToken::new(), &mut |p| {
+        started.push((p.index, p.total, p.repository_id));
+    });
+
+    assert_eq!(
+        started,
+        [(0, 2, RepositoryId(1)), (1, 2, RepositoryId(2))],
+        "progress is reported in input order"
+    );
+    assert_eq!(
+        results
+            .iter()
+            .map(|result| result.repository_id)
+            .collect::<Vec<_>>(),
+        [Some(RepositoryId(1)), Some(RepositoryId(2))]
+    );
+    // 겹치지 않았다면 `OverlapRunner`가 제한 시간 뒤 오류를 돌려준다.
+    for result in &results {
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.removed_branches.len(), 1);
+    }
+    assert!(!sandbox.ref_exists(&first, "refs/heads/병합된-작업"));
+    assert!(!sandbox.ref_exists(&second, "refs/heads/다른-병합된-작업"));
+}
+
+/// 정리 도중 취소가 들어오면 아직 시작하지 않은 저장소는 건드리지 않는다.
+#[test]
+fn cancellation_during_clean_keeps_unstarted_repositories_untouched() {
+    let sandbox = Sandbox::new();
+    let first = sandbox.clone_with_default("trunk", "취소 전 정리");
+    let second = sandbox.clone_with_default("trunk", "취소 후 정리");
+    sandbox.git(&first, &["branch", "done"]);
+    sandbox.git(&second, &["branch", "done"]);
+    let namespaces = default_namespaces();
+    let runner = ProcessGitRunner::new();
+    let plans = plans(batch::scan_all(
+        &runner,
+        &requests(&[&first, &second], &namespaces),
+        &CancellationToken::new(),
+        &mut |_| {},
+    ));
+    let cancel = CancellationToken::new();
+    let mut started = Vec::new();
+    let results = batch::clean_all(&runner, &plans, &cancel, &mut |progress| {
+        started.push(progress.repository_id);
+        cancel.cancel();
+    });
+
+    assert_eq!(started, [RepositoryId(1)]);
+    assert_eq!(results.len(), 1);
+    assert!(results[0].errors.is_empty(), "{:?}", results[0].errors);
+    assert!(!sandbox.ref_exists(&first, "refs/heads/done"));
+    assert!(sandbox.ref_exists(&second, "refs/heads/done"));
+}
+
+/// 동시에 실행 중인 Git 명령 수의 최댓값을 기록하는 runner.
+struct InFlightRunner {
+    /// 지금 실행 중인 명령 수.
+    running: AtomicUsize,
+    /// 관측한 최댓값.
+    peak: AtomicUsize,
+}
+
+impl GitRunner for InFlightRunner {
+    /// 실행 중인 수를 세면서 실제 Git을 실행한다.
+    fn run(
+        &self,
+        repository: &Path,
+        args: &[&OsStr],
+    ) -> git_cleanup_tray::error::Result<GitOutput> {
+        let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        let output = ProcessGitRunner::new().run(repository, args);
+        self.running.fetch_sub(1, Ordering::SeqCst);
+        output
+    }
+}
+
+/// 같은 저장소를 가리키는 plan이 둘 들어오면 동시 실행 수와 관계없이 하나씩 실행한다.
+#[test]
+fn clean_all_never_overlaps_plans_of_one_repository() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.clone_with_default("trunk", "같은 저장소");
+    sandbox.git(&repo, &["branch", "done"]);
+    let namespaces = default_namespaces();
+    // 같은 저장소를 두 번 Scan해 같은 대상을 가리키는 plan 두 개를 만든다.
+    let same: Vec<ScanRequest<'_>> = (0..2).map(|_| request(&repo, &namespaces, &[])).collect();
+    let plans = plans(batch::scan_all(
+        &ProcessGitRunner::new(),
+        &same,
+        &CancellationToken::new(),
+        &mut |_| {},
+    ));
+    assert_eq!(plans.len(), 2);
+
+    let runner = InFlightRunner {
+        running: AtomicUsize::new(0),
+        peak: AtomicUsize::new(0),
+    };
+    let results = batch::clean_all_with_parallelism(
+        &runner,
+        &plans,
+        &CancellationToken::new(),
+        4,
+        &mut |_| {},
+    );
+
+    assert_eq!(runner.peak.load(Ordering::SeqCst), 1);
+    assert_eq!(results.len(), 2);
+    // 먼저 실행한 plan이 지우고, 두 번째는 재검증에서 바뀐 것을 보고 넘어간다.
+    assert_eq!(results[0].removed_branches, ["done"]);
+    assert!(
+        results[1].removed_branches.is_empty(),
+        "{:?}",
+        results[1].removed_branches
+    );
+    assert!(results[1].errors.is_empty(), "{:?}", results[1].errors);
+    assert!(!sandbox.ref_exists(&repo, "refs/heads/done"));
 }

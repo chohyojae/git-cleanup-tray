@@ -7,7 +7,8 @@
 //!
 //! ```text
 //! Scan       : 저장소별 worker(설정 로드 → Scan) → 완료한 저장소의 요약 갱신
-//! Clean      : worker(Scan) → 확인 dialog(체크한 항목만 남김) → worker(순차 Execute + 이력 저장) → 결과 표시
+//! Clean      : worker(Scan) → 확인 dialog(체크한 항목만 남김) → worker(저장소별 동시 Execute + 이력 저장) → 결과 표시
+//! Update     : worker(저장소별 동시 fetch·fast-forward) → 요약 갱신
 //! 목록 변경   : worker(repositories.json 읽기 → 변경 → 저장) → 목록 갱신
 //! ```
 //!
@@ -436,7 +437,7 @@ impl App {
         });
         if cancelled {
             self.set_progress(String::from(
-                "Cancelling after the current repository finishes…",
+                "Cancelling after the running repositories finish…",
             ));
         }
     }

@@ -579,12 +579,16 @@ Repository C    2 removable, 1 skipped
 2. 전체 CleanupPlan 생성
 3. 요약 표시
 4. 사용자 확인
-5. 저장소 단위 순차 실행
+5. 저장소 단위 동시 실행 (2026-11-20 변경)
 6. 결과 표시
 
-한 저장소에서 오류가 발생해도 다음 저장소를 계속 처리한다.
+한 저장소에서 오류가 발생해도 다른 저장소를 계속 처리한다.
 
-MVP에서는 병렬 cleanup을 사용하지 않는다.
+서로 다른 저장소의 정리는 Scan과 같은 한도(CPU 수에 따라 2~4개) 안에서 동시에 실행한다.
+한 저장소 안의 삭제는 지금처럼 순서대로 하며, 같은 저장소를 가리키는 plan이 둘 이상이면 하나씩 실행한다.
+결과·이력·진행 알림은 입력 순서를 따른다. 취소하면 새 저장소를 시작하지 않고 이미 시작한 저장소가
+끝나기를 기다린다. 측정(2026-11-20, macOS, 임시 저장소 8개 × merge된 branch 40개, 3회):
+순차 5.3~5.7초, 4개 동시 1.6초.
 
 ---
 
@@ -710,6 +714,7 @@ Disable remote branch deletion
 ### 주기 최신화·정리 (2026-11-04 추가)
 
 - 수동 `Update All`/저장소 `Update`: 등록 remote fetch → 해당 remote의 upstream이 있는 로컬 branch fast-forward.
+- `Update All`과 주기 실행은 최신화 → Scan → Clean 단계를 순서대로 진행하고, 각 단계 안에서 서로 다른 저장소를 Scan과 같은 한도(2~4개)로 동시에 처리한다 (2026-11-20 변경). 측정(macOS, 로컬 경로 remote의 임시 저장소 8개, 3회): 최신화 순차 1.0~1.1초, 4개 동시 0.32~0.35초. 실제 네트워크 remote에서는 측정하지 않았다.
 - fetch는 명시한 `refs/remotes/<remote>/*`만 갱신하며 prune/tag 갱신을 하지 않는다.
 - checkout되지 않은 branch는 강제 갱신 없는 로컬 fetch를 사용한다. clean main/linked worktree는 `merge --ff-only --no-autostash --no-overwrite-ignore`로 갱신한다.
 - dirty/locked worktree, 진행 중인 rebase/merge, 로컬 커밋이 앞서거나 갈라진 branch는 보존한다. branch·HEAD를 실행 직전에 다시 확인한다.
@@ -910,7 +915,7 @@ Git scan/cleanup은 worker thread 또는 background task에서 수행한다.
 - 개별 Scan과 Scan All은 저장소별 대기 목록을 공유하며 기본 2~4개까지 동시에 검사한다.
 - 다른 저장소의 Scan 중에도 새 Scan 요청을 받고, 완료한 저장소부터 결과를 갱신한다.
 - Scan은 변경 작업과 겹치지 않으며, idle 상태에 상주 worker나 polling을 추가하지 않는다.
-- Clean All은 기본적으로 repository를 순차 처리한다.
+- Clean All과 Update All은 서로 다른 repository를 같은 한도 안에서 동시에 처리한다. 한 repository 안의 삭제·갱신은 순서대로 한다.
 - UI button double-click에 의한 중복 실행을 막는다.
 - 외부 Git process가 사용 중인 lock을 임의로 삭제하지 않는다.
 
@@ -1290,7 +1295,7 @@ GUI 없이 integration test만으로 실제 임시 repository cleanup을 검증�
 
 - aggregate plan
 - final confirmation
-- sequential job execution
+- per-repository job execution (처음에는 순차, 2026-11-20부터 제한된 동시 실행)
 - cancellation
 - result summary
 

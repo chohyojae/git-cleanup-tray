@@ -15,13 +15,13 @@ pub enum AppCommand {
     TrayClicked,
     /// enabled 저장소 전체를 공유 상한 안에서 동시 검사.
     ScanAll,
-    /// 전체 재검사 → 요약 → 사용자 확인 → 순차 실행.
+    /// 전체 재검사 → 요약 → 사용자 확인 → 저장소별 동시 실행.
     CleanAll,
-    /// enabled 저장소 전체 fetch와 로컬 브랜치 최신화.
+    /// enabled 저장소 전체 fetch와 로컬 브랜치 최신화. 저장소별로 동시에 실행한다.
     UpdateAll,
     /// 저장소 하나 fetch와 로컬 브랜치 최신화.
     UpdateRepository(RepositoryId),
-    /// 진행 중인 Scan / Clean 취소. 진행 중인 저장소까지 끝내고 멈춘다.
+    /// 진행 중인 Scan / Clean / Update 취소. 이미 시작한 저장소까지 끝내고 멈춘다.
     CancelJob,
     /// 폴더를 골라 저장소로 등록.
     AddRepository,

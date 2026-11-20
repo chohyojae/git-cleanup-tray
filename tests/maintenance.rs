@@ -114,6 +114,74 @@ fn isolates_fetch_failures_and_disabled_repositories() {
     assert!(sandbox.ref_exists(&disabled, "refs/heads/merged"));
 }
 
+/// 여러 저장소를 함께 최신화·정리해도 요약과 이력은 등록 순서를 따르고 저장소마다 한 번씩 처리된다.
+#[test]
+fn updates_and_cleans_several_repositories_in_registration_order() {
+    let sandbox = Sandbox::new();
+    let names = [
+        "첫째 저장소",
+        "둘째 저장소",
+        "셋째 저장소",
+        "넷째 저장소",
+        "다섯째 저장소",
+    ];
+    let works: Vec<_> = names
+        .iter()
+        .map(|name| {
+            let work = sandbox.clone_with_default("trunk", name);
+            sandbox.git(&work, &["branch", "merged"]);
+            work
+        })
+        .collect();
+    let configs: Vec<_> = (1..)
+        .zip(&works)
+        .map(|(id, work)| config(work, id, true))
+        .collect();
+    let dir = sandbox.root.join("설정 폴더");
+    repository_store::save(&dir, &configs).expect("save");
+
+    let mut progress = Vec::new();
+    let report = maintenance::run(
+        &dir,
+        ScanScope::Enabled,
+        true,
+        &CancellationToken::new(),
+        &mut |text| progress.push(text),
+    )
+    .expect("run");
+
+    assert_eq!(report.errors, 0, "{:?}", report.problems);
+    assert!(!report.cancelled);
+    let ids: Vec<u64> = report.summaries.iter().map(|(id, _)| id.0).collect();
+    assert_eq!(ids, [1, 2, 3, 4, 5]);
+    let cleanup = report.cleanup.expect("cleanup");
+    assert_eq!(cleanup.totals.repositories, 5);
+    assert_eq!(cleanup.totals.branches, 5);
+    let cleaned: Vec<u64> = cleanup.summaries.iter().map(|(id, _)| id.0).collect();
+    assert_eq!(cleaned, [1, 2, 3, 4, 5]);
+    for work in &works {
+        assert!(!sandbox.ref_exists(work, "refs/heads/merged"));
+        assert!(sandbox.ref_exists(work, "refs/heads/trunk"));
+    }
+    let history: Vec<u64> = history_store::load(&dir)
+        .expect("history")
+        .iter()
+        .map(|entry| entry.repository_id.0)
+        .collect();
+    assert_eq!(history, [1, 2, 3, 4, 5]);
+    // 단계는 겹치지 않는다: 모든 fetch 알림 뒤에 Scan, 그 뒤에 Clean 알림이 온다.
+    let phases: Vec<&str> = progress
+        .iter()
+        .map(|text| text.split_whitespace().next().unwrap_or_default())
+        .collect();
+    let expected: Vec<&str> = ["Fetching", "Scanning", "Cleaning"]
+        .into_iter()
+        .flat_map(|phase| std::iter::repeat_n(phase, 5))
+        .collect();
+    assert_eq!(phases, expected);
+    assert_eq!(progress[0], "Fetching and updating 1 of 5: 저장소 1");
+}
+
 /// 수동 최신화는 자동 clean 설정과 무관하게 삭제하지 않는다. 단일 선택은 disabled여도 처리한다.
 #[test]
 fn manual_update_does_not_clean_and_honors_scope() {

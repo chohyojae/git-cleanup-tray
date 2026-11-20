@@ -10,9 +10,11 @@ use crate::git::repository::RepositoryId;
 
 use super::Job;
 
-/// Git의 파일 I/O를 겹치되 저장소가 많아도 process를 무제한 생성하지 않을 기본 동시 검사 수.
+/// Git의 파일·네트워크 I/O를 겹치되 저장소가 많아도 process를 무제한 생성하지 않을 기본 동시 저장소 수.
+///
+/// Scan, Clean All, Update All이 같은 값을 쓴다. 한 번에 한 종류의 작업만 실행하므로 합산되지 않는다.
 #[must_use]
-pub fn scan_parallelism() -> usize {
+pub fn repository_parallelism() -> usize {
     std::thread::available_parallelism().map_or(2, |count| count.get().clamp(2, 4))
 }
 
@@ -35,7 +37,7 @@ pub struct ScanQueue {
 impl Default for ScanQueue {
     /// 장치별 기본 동시 검사 수로 빈 queue를 만든다.
     fn default() -> Self {
-        Self::new(scan_parallelism())
+        Self::new(repository_parallelism())
     }
 }
 

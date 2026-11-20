@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! 수동 최신화와 주기 최신화 → Scan → Clean을 같은 worker 안에서 순차 처리한다.
+//! 수동 최신화와 주기 최신화 → Scan → Clean을 같은 worker 안에서 단계별로 처리한다.
+//!
+//! 단계는 순서대로 진행하고, 각 단계 안에서는 서로 다른 저장소를 제한된 수만큼 동시에 처리한다.
 
 use std::path::Path;
 
 use crate::app::state::SummaryOutcome;
 use crate::app::tasks::{self, CleanReport, PendingCleanup, ProgressSink, ScanScope};
-use crate::cleanup::planner::CleanupPlanner;
-use crate::error::Result;
+use crate::error::{CleanupError, Result};
+use crate::git::in_process::InProcessGitRunner;
 use crate::git::repository::RepositoryId;
 use crate::git::sync;
 use crate::jobs::cancellation::CancellationToken;
+use crate::jobs::{batch, parallel, queue};
 use crate::storage::repository_store::RepositoryConfig;
+use crate::storage::settings_store::AppSettings;
 use crate::storage::{repository_store, settings_store};
 
 /// 최신화와 선택적 정리의 요약. 상세 plan은 worker 종료 시 버린다.
@@ -39,6 +43,8 @@ pub struct MaintenanceReport {
 ///
 /// 주기 실행은 사용자가 설정 화면에서 미리 동의했으므로 확인 dialog 없이 기존 executor를 쓴다.
 /// fetch에 실패한 저장소는 오래된 ref로 정리하지 않는다. 설정이 손상되면 모든 작업을 중단한다.
+/// 취소되면 새 저장소를 시작하지 않고 실행 중인 저장소가 끝나기를 기다린 뒤 다음 단계로 가지 않는다.
+/// `progress`는 호출한 thread에서만 부른다.
 ///
 /// # Errors
 ///
@@ -53,12 +59,6 @@ pub fn run(
     let settings = settings_store::load(dir)?;
     let repositories = repository_store::load(dir)?;
     let runner = tasks::runner_for(settings.git_executable.as_deref());
-    let planner = CleanupPlanner::new(&runner);
-    let mut pending = PendingCleanup {
-        plans: Vec::new(),
-        names: Vec::new(),
-        git_executable: settings.git_executable.clone(),
-    };
     let mut report = MaintenanceReport {
         repositories: Vec::new(),
         summaries: Vec::new(),
@@ -69,17 +69,62 @@ pub fn run(
         cleanup: None,
         cancelled: false,
     };
-    for repo in repositories.iter().filter(|repo| match scope {
-        ScanScope::Enabled => repo.enabled,
-        ScanScope::Only(id) => repo.id == id,
-    }) {
-        if cancel.is_cancelled() {
-            break;
+    let targets: Vec<&RepositoryConfig> = repositories
+        .iter()
+        .filter(|repo| match scope {
+            ScanScope::Enabled => repo.enabled,
+            ScanScope::Only(id) => repo.id == id,
+        })
+        .collect();
+
+    let updated = update_repositories(&runner, &targets, cancel, progress, &mut report);
+    if clean && !cancel.is_cancelled() {
+        let pending = scan_updated(&runner, &settings, &updated, cancel, progress, &mut report);
+        if !cancel.is_cancelled() {
+            // 저장소별 정리도 동시에 실행한다 ([`batch::clean_all`]).
+            report.cleanup = Some(tasks::clean_in(Some(dir), &pending, cancel, progress));
         }
-        progress(format!("Fetching and updating: {}", repo.name));
-        match sync::synchronize(&runner, &repo.path, &repo.remote_name, &|| {
-            cancel.is_cancelled()
-        }) {
+    }
+    report.cancelled = cancel.is_cancelled();
+    report.repositories = repositories;
+    Ok(report)
+}
+
+/// 1단계: 서로 다른 저장소의 fetch와 fast-forward를 동시에 실행하고 결과를 `report`에 등록 순서로 담는다.
+///
+/// 시간 대부분이 remote 응답 대기라 겹칠수록 전체 시간이 준다. 한 저장소 안의 branch 갱신은
+/// [`sync::synchronize`]가 순서대로 한다. 오류 없이 최신화한 저장소만 돌려주며, 이 저장소들만
+/// 정리 전 Scan 대상이 된다.
+fn update_repositories<'a>(
+    runner: &InProcessGitRunner,
+    targets: &[&'a RepositoryConfig],
+    cancel: &CancellationToken,
+    progress: ProgressSink<'_>,
+    report: &mut MaintenanceReport,
+) -> Vec<&'a RepositoryConfig> {
+    let synced = parallel::map_bounded(
+        targets,
+        queue::repository_parallelism(),
+        cancel,
+        "update-repository",
+        &mut |index| {
+            progress(format!(
+                "Fetching and updating {} of {}: {}",
+                index + 1,
+                targets.len(),
+                targets[index].name
+            ));
+        },
+        &|repo| {
+            sync::synchronize(runner, &repo.path, &repo.remote_name, &|| {
+                cancel.is_cancelled()
+            })
+        },
+        &|_, error| Err(CleanupError::Io(error)),
+    );
+    let mut updated = Vec::with_capacity(synced.len());
+    for (repo, outcome) in targets.iter().copied().zip(synced) {
+        match outcome {
             Ok(result) => {
                 report.updated += result.updated;
                 report.skipped += result.skipped.len();
@@ -93,48 +138,74 @@ pub fn run(
                     },
                 ));
                 for message in &result.skipped {
-                    problem(&mut report, &repo.name, message);
+                    problem(report, &repo.name, message);
                 }
                 for error in &result.errors {
-                    problem(&mut report, &repo.name, error);
+                    problem(report, &repo.name, error);
                 }
-                if !clean || !result.errors.is_empty() || cancel.is_cancelled() {
-                    continue;
-                }
-                progress(format!("Scanning after update: {}", repo.name));
-                match planner.scan(&tasks::scan_request(repo, &settings)) {
-                    Ok(plan) => {
-                        report.errors += plan.errors.len();
-                        for error in &plan.errors {
-                            problem(&mut report, &repo.name, error);
-                        }
-                        // 일부 항목을 검사하지 못한 저장소도 자동 삭제에서 제외한다.
-                        if plan.errors.is_empty() {
-                            pending.names.push((repo.id, repo.name.clone()));
-                            pending.plans.push(plan);
-                        }
-                    }
-                    Err(error) => {
-                        report.errors += 1;
-                        problem(&mut report, &repo.name, error);
-                    }
+                if result.errors.is_empty() {
+                    updated.push(repo);
                 }
             }
             Err(error) => {
                 report.errors += 1;
-                problem(&mut report, &repo.name, &error);
+                problem(report, &repo.name, &error);
                 report
                     .summaries
                     .push((repo.id, SummaryOutcome::Failed(error.to_string())));
             }
         }
     }
-    if clean && !cancel.is_cancelled() {
-        report.cleanup = Some(tasks::clean_in(Some(dir), &pending, cancel, progress));
+    updated
+}
+
+/// 2단계: 최신화한 ref로 `updated` 저장소를 새로 Scan해 정리 계획을 만든다.
+///
+/// Scan All과 같은 동시 검사 경로를 쓴다. 일부 항목이라도 검사하지 못한 저장소는 자동 삭제에서 뺀다.
+fn scan_updated(
+    runner: &InProcessGitRunner,
+    settings: &AppSettings,
+    updated: &[&RepositoryConfig],
+    cancel: &CancellationToken,
+    progress: ProgressSink<'_>,
+    report: &mut MaintenanceReport,
+) -> PendingCleanup {
+    let mut pending = PendingCleanup {
+        plans: Vec::new(),
+        names: Vec::new(),
+        git_executable: settings.git_executable.clone(),
+    };
+    let requests: Vec<_> = updated
+        .iter()
+        .map(|repo| tasks::scan_request(repo, settings))
+        .collect();
+    let scans = batch::scan_all(runner, &requests, cancel, &mut |p| {
+        let name = updated.get(p.index).map_or("", |repo| repo.name.as_str());
+        progress(format!(
+            "Scanning after update {} of {}: {name}",
+            p.index + 1,
+            p.total
+        ));
+    });
+    for (repo, scan) in updated.iter().zip(scans) {
+        match scan.outcome {
+            Ok(plan) => {
+                report.errors += plan.errors.len();
+                for error in &plan.errors {
+                    problem(report, &repo.name, error);
+                }
+                if plan.errors.is_empty() {
+                    pending.names.push((repo.id, repo.name.clone()));
+                    pending.plans.push(plan);
+                }
+            }
+            Err(error) => {
+                report.errors += 1;
+                problem(report, &repo.name, error);
+            }
+        }
     }
-    report.cancelled = cancel.is_cancelled();
-    report.repositories = repositories;
-    Ok(report)
+    pending
 }
 
 /// 많은 저장소에서도 상세 UI가 무한히 커지지 않도록 오류 문구 수를 제한한다.

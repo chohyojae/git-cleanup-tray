@@ -395,7 +395,7 @@ pub struct CleanReport {
     pub finished_at: u64,
 }
 
-/// worker thread: 확인된 계획을 저장소 순서대로 실행하고, 결과를 요약해 이력에 남긴다.
+/// worker thread: 확인된 계획을 저장소별로 동시에 실행하고, 결과를 입력 순서로 요약해 이력에 남긴다.
 ///
 /// 이력 저장 실패는 정리 결과에 영향을 주지 않으므로 로그만 남긴다.
 #[must_use]

@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! 여러 저장소의 동시 Scan과 순차 Clean All 본체 (PLAN 12장).
+//! 여러 저장소의 동시 Scan과 동시 Clean All 본체 (PLAN 12장).
 //!
-//! 호출한 worker에서 결과를 기다리되 UI에는 의존하지 않는다. Scan은 제한된 수만큼 동시에,
-//! Clean은 순서대로 처리한다. 취소 후에는 새 저장소를 시작하지 않고 이미 시작한 검사를 회수한다.
+//! 호출한 worker에서 결과를 기다리되 UI에는 의존하지 않는다. Scan과 Clean 모두 서로 다른 저장소를
+//! 제한된 수만큼 동시에 처리하고, 한 저장소 안의 작업은 순서대로 한다. 취소 후에는 새 저장소를
+//! 시작하지 않고 이미 시작한 저장소를 회수한다.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::mpsc;
-use std::thread;
+use std::collections::HashSet;
 
 use crate::cleanup::CleanupPlan;
 use crate::cleanup::candidate::SkipReason;
@@ -18,6 +17,7 @@ use crate::error::{CleanupError, Result};
 use crate::git::repository::RepositoryId;
 use crate::git::runner::GitRunner;
 use crate::jobs::cancellation::CancellationToken;
+use crate::jobs::parallel;
 
 /// 저장소 하나의 Scan 결과.
 #[derive(Debug)]
@@ -53,7 +53,7 @@ pub fn scan_all<R: GitRunner + ?Sized>(
         runner,
         requests,
         cancel,
-        super::queue::scan_parallelism(),
+        super::queue::repository_parallelism(),
         on_progress,
     )
 }
@@ -68,72 +68,24 @@ pub fn scan_all_with_parallelism<R: GitRunner + ?Sized>(
     parallelism: usize,
     on_progress: &mut dyn FnMut(Progress),
 ) -> Vec<RepositoryScan> {
-    let limit = parallelism.max(1);
-    if requests.len() <= 1 || limit == 1 {
-        return requests
-            .iter()
-            .enumerate()
-            .take_while(|_| !cancel.is_cancelled())
-            .map(|(index, request)| {
-                on_progress(Progress {
-                    index,
-                    total: requests.len(),
-                    repository_id: request.repository_id,
-                });
-                scan_one(runner, request)
-            })
-            .collect();
-    }
-    let mut scans: Vec<Option<RepositoryScan>> = std::iter::repeat_with(|| None)
-        .take(requests.len())
-        .collect();
-    let (sender, receiver) = mpsc::channel();
-    thread::scope(|scope| {
-        let mut next = 0;
-        let mut running = 0;
-        loop {
-            while running < limit && next < requests.len() && !cancel.is_cancelled() {
-                let index = next;
-                next += 1;
-                let request = &requests[index];
-                on_progress(Progress {
-                    index,
-                    total: requests.len(),
-                    repository_id: request.repository_id,
-                });
-                let sender = sender.clone();
-                match thread::Builder::new()
-                    .name("scan-repository".into())
-                    .spawn_scoped(scope, move || {
-                        // 저장소 하나의 panic이 다른 저장소의 검사 결과를 잃게 하지 않는다.
-                        let scan = catch_unwind(AssertUnwindSafe(|| scan_one(runner, request)))
-                            .unwrap_or_else(|_| RepositoryScan {
-                                repository_id: request.repository_id,
-                                outcome: Err(CleanupError::Io(std::io::Error::other(
-                                    "Scan worker panicked",
-                                ))),
-                            });
-                        let _ = sender.send((index, scan));
-                    }) {
-                    Ok(_) => running += 1,
-                    Err(error) => {
-                        scans[index] = Some(RepositoryScan {
-                            repository_id: request.repository_id,
-                            outcome: Err(CleanupError::Io(error)),
-                        });
-                    }
-                }
-            }
-            if running == 0 {
-                break;
-            }
-            if let Ok((index, scan)) = receiver.recv() {
-                scans[index] = Some(scan);
-                running -= 1;
-            }
-        }
-    });
-    scans.into_iter().flatten().collect()
+    parallel::map_bounded(
+        requests,
+        parallelism,
+        cancel,
+        "scan-repository",
+        &mut |index| {
+            on_progress(Progress {
+                index,
+                total: requests.len(),
+                repository_id: requests[index].repository_id,
+            });
+        },
+        &|request| scan_one(runner, request),
+        &|request, error| RepositoryScan {
+            repository_id: request.repository_id,
+            outcome: Err(CleanupError::Io(error)),
+        },
+    )
 }
 
 /// 저장소 하나의 읽기 검사를 수행하고 결과를 요약해 기록한다.
@@ -160,52 +112,98 @@ fn scan_one<R: GitRunner + ?Sized>(runner: &R, request: &ScanRequest<'_>) -> Rep
     }
 }
 
-/// `plans`를 순서대로 실행한다. 삭제할 항목이 없는 plan은 건너뛴다.
+/// `plans`를 기본 동시 실행 수만큼 나눠 실행한다. 삭제할 항목이 없는 plan은 건너뛴다.
 ///
 /// 빈 plan을 실행하지 않는 이유: executor는 마지막에 `git worktree prune`을 실행하는데, 정리할
 /// 것이 없는 저장소에는 어떤 mutation도 하지 않는 편이 사용자가 예상하는 동작이다.
-/// 저장소를 시작할 때마다 `on_progress`를 호출한다. 취소되면 진행 중인 저장소까지만 끝내고 그
-/// 시점까지의 결과를 돌려준다.
+/// 서로 다른 저장소만 동시에 실행하고, 한 저장소 안의 삭제는 지금처럼 순서대로 한다. 결과는 완료
+/// 순서와 관계없이 입력 순서를 따른다. 저장소를 시작할 때마다 호출한 thread에서 `on_progress`를
+/// 부른다. 취소되면 새 저장소를 시작하지 않고, 이미 시작한 저장소가 끝난 뒤 그때까지의 결과를 돌려준다.
 pub fn clean_all<R: GitRunner + ?Sized>(
     runner: &R,
     plans: &[CleanupPlan],
     cancel: &CancellationToken,
     on_progress: &mut dyn FnMut(Progress),
 ) -> Vec<CleanupResult> {
-    let executor = CleanupExecutor::new(runner);
-    let total = plans
+    clean_all_with_parallelism(
+        runner,
+        plans,
+        cancel,
+        super::queue::repository_parallelism(),
+        on_progress,
+    )
+}
+
+/// 지정한 동시 저장소 수로 [`clean_all`]과 같은 실행 경로를 탄다. 성능 비교와 재현에 사용한다.
+///
+/// 같은 저장소를 가리키는 plan이 둘 이상 들어오면 `parallelism`과 관계없이 순서대로 실행한다.
+/// 한 저장소에서 삭제 명령 두 묶음이 겹치면 Git lock 충돌이 나고 재검증 결과도 믿을 수 없기 때문이다.
+pub fn clean_all_with_parallelism<R: GitRunner + ?Sized>(
+    runner: &R,
+    plans: &[CleanupPlan],
+    cancel: &CancellationToken,
+    parallelism: usize,
+    on_progress: &mut dyn FnMut(Progress),
+) -> Vec<CleanupResult> {
+    let runnable: Vec<&CleanupPlan> = plans
         .iter()
         .filter(|plan| plan.removable_count() > 0)
-        .count();
-    let mut results = Vec::with_capacity(total);
-    for (index, plan) in plans
-        .iter()
-        .filter(|plan| plan.removable_count() > 0)
-        .enumerate()
-    {
-        if cancel.is_cancelled() {
-            log::info!("cleanup cancelled");
-            break;
-        }
-        on_progress(Progress {
-            index,
-            total,
-            repository_id: plan.repository_id,
-        });
-        log::info!("cleanup start: repository {}", plan.repository_id.0);
-        let result = executor.execute(plan);
-        log::info!(
-            "cleanup end: repository {}: removed {} worktrees, {} branches, {} refs; {} skipped, {} errors",
-            plan.repository_id.0,
-            result.removed_worktrees.len(),
-            result.removed_branches.len(),
-            result.removed_custom_refs.len(),
-            result.skipped.len(),
-            result.errors.len(),
-        );
-        results.push(result);
+        .collect();
+    let limit = if targets_are_distinct(&runnable) {
+        parallelism
+    } else {
+        log::warn!("cleanup plans share a repository; running them one at a time");
+        1
+    };
+    let total = runnable.len();
+    let results = parallel::map_bounded(
+        &runnable,
+        limit,
+        cancel,
+        "clean-repository",
+        &mut |index| {
+            on_progress(Progress {
+                index,
+                total,
+                repository_id: runnable[index].repository_id,
+            });
+        },
+        &|plan| clean_one(runner, plan),
+        &|plan, error| CleanupResult {
+            repository_id: Some(plan.repository_id),
+            errors: vec![CleanupError::Io(error)],
+            ..CleanupResult::default()
+        },
+    );
+    if results.len() < total {
+        log::info!("cleanup cancelled");
     }
     results
+}
+
+/// 모든 plan이 서로 다른 저장소를 가리키면 `true`. id와 등록 경로를 모두 본다.
+fn targets_are_distinct(plans: &[&CleanupPlan]) -> bool {
+    let mut ids = HashSet::with_capacity(plans.len());
+    let mut paths = HashSet::with_capacity(plans.len());
+    plans
+        .iter()
+        .all(|plan| ids.insert(plan.repository_id) && paths.insert(plan.repository_path.as_path()))
+}
+
+/// 저장소 하나의 plan을 실행하고 결과를 요약해 기록한다.
+fn clean_one<R: GitRunner + ?Sized>(runner: &R, plan: &CleanupPlan) -> CleanupResult {
+    log::info!("cleanup start: repository {}", plan.repository_id.0);
+    let result = CleanupExecutor::new(runner).execute(plan);
+    log::info!(
+        "cleanup end: repository {}: removed {} worktrees, {} branches, {} refs; {} skipped, {} errors",
+        plan.repository_id.0,
+        result.removed_worktrees.len(),
+        result.removed_branches.len(),
+        result.removed_custom_refs.len(),
+        result.skipped.len(),
+        result.errors.len(),
+    );
+    result
 }
 
 /// Clean All 확인 dialog에 보여줄 합계 (PLAN 13장).

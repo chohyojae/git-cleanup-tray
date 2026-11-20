@@ -8,11 +8,13 @@
 //!
 //! - 같은 저장소에 두 작업을 동시에 실행하지 않는다.
 //! - 개별 Scan과 Scan All은 저장소별 queue에서 제한된 수만큼 동시에 실행한다.
-//! - Clean All은 저장소를 순차 처리한다.
+//! - Clean All과 Update All도 서로 다른 저장소를 같은 한도 안에서 동시에 처리한다. 한 저장소 안의
+//!   삭제·갱신은 순서대로 한다.
 //! - idle 상태에서는 worker thread를 남겨 두지 않는다 (요청 시 생성, 끝나면 종료).
 
 pub mod batch;
 pub mod cancellation;
+pub mod parallel;
 pub mod queue;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
